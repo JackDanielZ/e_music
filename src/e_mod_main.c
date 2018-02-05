@@ -19,6 +19,7 @@ typedef struct
    Eina_Stringshare *id;
    Eina_Stringshare *thumbnail_url;
    Eina_Stringshare *title;
+   Eina_Bool is_playable;
    Eo *download_exe;
 } Playlist_Item;
 
@@ -203,12 +204,52 @@ _dialer_create(Eina_Bool is_get_method, const char *data, Efl_Event_Cb cb)
    return dialer;
 }
 
+static Eina_Bool
+_exe_output_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event)
+{
+   Ecore_Exe_Event_Data *event_data = (Ecore_Exe_Event_Data *)event;
+   const char *buf = event_data->data;
+   Ecore_Exe *exe = event_data->exe;
+   Playlist_Item *pli = ecore_exe_data_get(exe);
+   if (!pli || pli->download_exe != exe) return ECORE_CALLBACK_PASS_ON;
+
+   while (!pli->is_playable && (buf = strstr(buf, "[download] ")))
+     {
+        buf += 11;
+        float percent = strtod(buf, NULL);
+        if (percent) pli->is_playable = EINA_TRUE;
+     }
+
+   return ECORE_CALLBACK_DONE;
+}
+
+static Eina_Bool
+_exe_end_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event)
+{
+   Ecore_Exe_Event_Del *event_info = (Ecore_Exe_Event_Del *)event;
+   Ecore_Exe *exe = event_info->exe;
+   Playlist_Item *pli = ecore_exe_data_get(exe);
+   if (!pli || pli->download_exe != exe) return ECORE_CALLBACK_PASS_ON;
+   return ECORE_CALLBACK_DONE;
+}
+
+static void
+_youtube_download(Playlist_Item *pli)
+{
+   char cmd[1024];
+   sprintf(cmd, "youtube-dl --no-part -x \"http://youtube.com/watch?v=%s\" -o /tmp/yt-%s.opus",
+         pli->id, pli->id);
+   pli->download_exe = ecore_exe_pipe_run(cmd, ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_ERROR, pli);
+   efl_wref_add(pli->download_exe, &(pli->download_exe));
+}
+
 static void
 _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
 {
    Instance *inst = efl_key_data_get(event->object, "Instance");
    Playlist *pl = efl_key_data_get(event->object, "Playlist");
    char *id_str = strstr(inst->data_buf, "data-video-id=");
+   Playlist_Item *first = NULL;
    while (id_str)
      {
         Playlist_Item *it;
@@ -221,6 +262,7 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         end_str = strchr(id_str, '\"');
         it = calloc(1, sizeof(*it));
         it->id = eina_stringshare_add_length(id_str, end_str-id_str);
+        if (!first) first = it;
 
         str = strstr(begin, "data-thumbnail-url=");
         if (str && str < end)
@@ -240,6 +282,7 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         pl->items = eina_list_append(pl->items, it);
         id_str = strstr(end, "data-video-id=");
      }
+   if (first) _youtube_download(first);
    _box_update(inst, EINA_TRUE);
 }
 
@@ -258,25 +301,6 @@ _playlist_start_bt_clicked(void *data, Evas_Object *obj, void *event_info EINA_U
    efl_key_data_set(dialer, "Playlist", pl);
    efl_net_dialer_dial(dialer, request);
    inst->playing_list = pl;
-}
-
-static Eina_Bool
-_exe_end_cb(void *data, int type EINA_UNUSED, void *event)
-{
-   Ecore_Exe_Event_Del *event_info = (Ecore_Exe_Event_Del *)event;
-   Ecore_Exe *exe = event_info->exe;
-   Item_Desc *d = ecore_exe_data_get(exe);
-   if (!d || d->inst != data) return ECORE_CALLBACK_PASS_ON;
-   return ECORE_CALLBACK_DONE;
-}
-
-static void
-_youtube_download(Playlist_Item *pli, Eina_Stringshare *id)
-{
-   char cmd[1024];
-   sprintf(cmd, "youtube-dl --no-part -x \"http://youtube.com/watch?v=%s\" -O /tmp/yt-%s.opus", id, id);
-   pli->download_exe = ecore_exe_pipe_run(cmd, ECORE_EXE_NONE, pli);
-   efl_wref_add(pli->download_exe, &(pli->download_exe));
 }
 
 static void
@@ -541,6 +565,7 @@ _gc_init(E_Gadcon *gc, const char *name, const char *id, const char *style)
    evas_object_event_callback_add(inst->o_icon, EVAS_CALLBACK_MOUSE_DOWN,
 				  _button_cb_mouse_down, inst);
 
+   ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _exe_output_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DEL, _exe_end_cb, inst);
 
    return gcc;
@@ -666,6 +691,7 @@ int main(int argc, char **argv)
    evas_object_resize(win, 480, 480);
    evas_object_show(win);
 
+   ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _exe_output_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DEL, _exe_end_cb, inst);
 
    _box_update(inst, EINA_FALSE);
