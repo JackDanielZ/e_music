@@ -62,7 +62,7 @@ typedef struct
    E_Gadcon_Popup *popup;
 #endif
    Evas_Object *o_icon;
-   Eo *main_box;
+   Eo *main_box, *pl_img;
    Eo *ply_emo, *play_total_lb, *play_prg_lb, *play_prg_sl;
    Eo *play_bt, *play_song_lb;
    Eo *next_bt, *prev_bt;
@@ -314,6 +314,7 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
              inst->cur_playlist_item = pli;
              if (pli->is_playable)
                {
+                  elm_image_file_set(inst->pl_img, pli->thumbnail_url, NULL);
                   emotion_object_file_set(inst->ply_emo, pli->download_path);
                }
              elm_object_text_set(inst->play_song_lb, pli->title);
@@ -473,6 +474,13 @@ _sl_changed(void *data, const Efl_Event *ev EINA_UNUSED)
    emotion_object_position_set(inst->ply_emo, val);
 }
 
+static char *
+_pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EINA_UNUSED)
+{
+   Playlist_Item *pli = data;
+   return strdup(pli->title);
+}
+
 static void
 _box_update(Instance *inst, Eina_Bool clear)
 {
@@ -511,6 +519,37 @@ _box_update(Instance *inst, Eina_Bool clear)
      {
         Playlist_Item *pli;
 
+        Eo *playlist_box = elm_box_add(inst->main_box);
+        elm_box_horizontal_set(playlist_box, EINA_TRUE);
+        evas_object_size_hint_weight_set(playlist_box, EVAS_HINT_EXPAND, 0.9);
+        evas_object_size_hint_align_set(playlist_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        elm_box_pack_end(inst->main_box, playlist_box);
+        evas_object_show(playlist_box);
+
+        Eo *playlist_gl = elm_genlist_add(playlist_box);
+        evas_object_size_hint_align_set(playlist_gl, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        evas_object_size_hint_weight_set(playlist_gl, 0.6, EVAS_HINT_EXPAND);
+        elm_box_pack_end(playlist_box, playlist_gl);
+        evas_object_show(playlist_gl);
+
+        Elm_Genlist_Item_Class *_pl_itc = elm_genlist_item_class_new();
+        _pl_itc->item_style = "default";
+        _pl_itc->func.text_get = _pl_item_text_get;
+
+        EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
+          {
+             elm_genlist_item_append(playlist_gl, _pl_itc, pli,
+                   NULL, ELM_GENLIST_ITEM_NONE, NULL, NULL);
+          }
+
+        inst->pl_img = elm_image_add(playlist_box);
+        //elm_image_file_set(inst->pl_img, buf, NULL);
+        evas_object_size_hint_weight_set(inst->pl_img, 0.4, EVAS_HINT_EXPAND);
+        evas_object_size_hint_align_set(inst->pl_img, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        elm_box_pack_end(playlist_box, inst->pl_img);
+        efl_wref_add(inst->pl_img, &inst->pl_img);
+        evas_object_show(inst->pl_img);
+
         if (!inst->ply_emo)
           {
              inst->ply_emo = emotion_object_add(inst->main_box);
@@ -523,6 +562,7 @@ _box_update(Instance *inst, Eina_Bool clear)
              efl_event_callback_add
                 (inst->ply_emo, EFL_CANVAS_VIDEO_EVENT_PLAYBACK_STOP, _media_finished, inst);
           }
+
         /* Player vertical box */
         Eo *ply_box = elm_box_add(inst->main_box);
         evas_object_size_hint_weight_set(ply_box, EVAS_HINT_EXPAND, 0.1);
@@ -606,24 +646,6 @@ _box_update(Instance *inst, Eina_Bool clear)
               NULL, _media_next_cb, inst);
         elm_box_pack_end(ply_bts_box, inst->next_bt);
         efl_weak_ref(&inst->next_bt);
-
-        EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
-          {
-             Eo *b = elm_box_add(inst->main_box);
-             elm_box_horizontal_set(b, EINA_TRUE);
-             evas_object_size_hint_align_set(b, EVAS_HINT_FILL, EVAS_HINT_FILL);
-             evas_object_size_hint_weight_set(b, EVAS_HINT_EXPAND, 0.0);
-             evas_object_show(b);
-             elm_box_pack_end(inst->main_box, b);
-
-             Eo *o = _label_create(b, pli->title, NULL);
-             elm_box_pack_end(b, o);
-
-             o = _button_create(b, NULL, _icon_create(b, "media-playback-start", NULL),
-                   NULL, NULL, NULL);
-             efl_key_data_set(o, "Instance", inst);
-             elm_box_pack_end(b, o);
-          }
      }
 }
 
@@ -938,9 +960,14 @@ int main(int argc, char **argv)
 
    Eo *win = elm_win_add(NULL, "Music", ELM_WIN_BASIC);
 
+   Eo *bg = elm_bg_add(win);
+   evas_object_size_hint_weight_set(bg, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
+   elm_win_resize_object_add(win, bg);
+   evas_object_show(bg);
+
    Eo *o = elm_box_add(win);
    evas_object_size_hint_align_set(o, EVAS_HINT_FILL, EVAS_HINT_FILL);
-   evas_object_size_hint_weight_set(o, EVAS_HINT_EXPAND, 0.0);
+   evas_object_size_hint_weight_set(o, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
    evas_object_show(o);
    elm_win_resize_object_add(win, o);
    efl_wref_add(o, &inst->main_box);
