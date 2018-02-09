@@ -62,7 +62,7 @@ typedef struct
    E_Gadcon_Popup *popup;
 #endif
    Evas_Object *o_icon;
-   Eo *main_box, *pl_img;
+   Eo *main, *main_box, *pl_img;
    Eo *ply_emo, *play_total_lb, *play_prg_lb, *play_prg_sl;
    Eo *play_bt, *play_song_lb;
    Eo *next_bt, *prev_bt;
@@ -552,7 +552,7 @@ _box_update(Instance *inst, Eina_Bool clear)
 
         if (!inst->ply_emo)
           {
-             inst->ply_emo = emotion_object_add(inst->main_box);
+             inst->ply_emo = emotion_object_add(inst->main);
              efl_weak_ref(&inst->ply_emo);
              emotion_object_init(inst->ply_emo, NULL);
              efl_event_callback_add
@@ -796,9 +796,10 @@ _button_cb_mouse_down(void *data, Evas *e EINA_UNUSED, Evas_Object *obj EINA_UNU
              Evas_Object *o;
              inst->popup = e_gadcon_popup_new(inst->gcc, 0);
 
+             inst->main = e_comp->elm;
              o = elm_box_add(e_comp->elm);
              evas_object_size_hint_align_set(o, EVAS_HINT_FILL, EVAS_HINT_FILL);
-             evas_object_size_hint_weight_set(o, EVAS_HINT_EXPAND, 0.0);
+             evas_object_size_hint_weight_set(o, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
              evas_object_show(o);
              efl_wref_add(o, &inst->main_box);
 
@@ -959,6 +960,7 @@ int main(int argc, char **argv)
    inst = _instance_create();
 
    Eo *win = elm_win_add(NULL, "Music", ELM_WIN_BASIC);
+   inst->main = win;
 
    Eo *bg = elm_bg_add(win);
    evas_object_size_hint_weight_set(bg, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
