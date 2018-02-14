@@ -503,6 +503,17 @@ _pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EIN
    return strdup(pli->title);
 }
 
+static Evas_Object *
+_pl_item_icon_get(void *data EINA_UNUSED, Evas_Object *obj, const char *part)
+{
+   Playlist_Item *pli = data;
+   if (!strcmp(part, "elm.swallow.end")) return NULL;
+   Evas_Object *ic = elm_icon_add(obj);
+   elm_image_file_set(ic, pli->thumbnail_url, NULL);
+   evas_object_size_hint_aspect_set(ic, EVAS_ASPECT_CONTROL_VERTICAL, 1, 1);
+   return ic;
+}
+
 static void
 _playlist_item_selected(void *data, Evas_Object *gl EINA_UNUSED, void *event_info)
 {
@@ -575,6 +586,7 @@ _box_update(Instance *inst, Eina_Bool clear)
         Elm_Genlist_Item_Class *_pl_itc = elm_genlist_item_class_new();
         _pl_itc->item_style = "default";
         _pl_itc->func.text_get = _pl_item_text_get;
+        _pl_itc->func.content_get = _pl_item_icon_get;
 
         EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
           {
