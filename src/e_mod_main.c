@@ -206,6 +206,51 @@ _dialer_create(Eina_Bool is_get_method, const char *data, Efl_Event_Cb cb)
 }
 
 static void
+_media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
+{
+   inst->item_to_play = NULL;
+   if (pli) pli->playing = play;
+   if (!play || pli != inst->cur_playlist_item)
+     {
+        /* Pause || the selected path is different of the played path */
+        if (!play)
+          {
+             elm_object_part_content_set(inst->play_bt, "icon",
+                   _icon_create(inst->play_bt, "media-playback-start", NULL));
+          }
+        if (pli != inst->cur_playlist_item) elm_object_text_set(inst->play_song_lb, "");
+        emotion_object_play_set(inst->ply_emo, EINA_FALSE);
+        if (inst->cur_playlist_item) inst->cur_playlist_item->playing = EINA_FALSE;
+     }
+   if (play && pli)
+     {
+        elm_object_part_content_set(inst->play_bt, "icon",
+              _icon_create(inst->play_bt, "media-playback-pause", NULL));
+        if (pli == inst->cur_playlist_item)
+          {
+             /* Play again when finished - int conversion is needed
+              * because the returned values are not exactly the same. */
+             if ((int)emotion_object_position_get(inst->ply_emo) == (int)emotion_object_play_length_get(inst->ply_emo))
+                emotion_object_position_set(inst->ply_emo, 0);
+          }
+        else
+          {
+             inst->cur_playlist_item = pli;
+             if (pli->is_playable)
+               {
+                  elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
+                  elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
+                  elm_image_file_set(inst->pl_img, pli->thumbnail_url, NULL);
+                  emotion_object_file_set(inst->ply_emo, pli->download_path);
+               }
+             elm_object_text_set(inst->play_song_lb, pli->title);
+          }
+        emotion_object_play_set(inst->ply_emo, EINA_TRUE);
+        pli->playing = EINA_TRUE;
+     }
+}
+
+static void
 _youtube_download(Instance *inst, Playlist_Item *pli)
 {
    char cmd[1024];
@@ -217,6 +262,35 @@ _youtube_download(Instance *inst, Playlist_Item *pli)
    pli->download_exe = ecore_exe_pipe_run(cmd, ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_ERROR, pli);
    efl_key_data_set(pli->download_exe, "Instance", inst);
    efl_wref_add(pli->download_exe, &(pli->download_exe));
+}
+
+static void
+_pli_download(Instance *inst, Playlist_Item *pli, Eina_Bool play)
+{
+   int i = 0;
+   Eina_List *itr = inst->cur_playlist->items;
+   if (play)
+     {
+        if (pli->is_playable) _media_play_set(inst, pli, EINA_TRUE);
+        else inst->item_to_play = pli;
+     }
+   if (!pli->is_playable && !pli->download_exe)
+     {
+        _youtube_download(inst, pli);
+     }
+   if (play)
+     {
+         while (itr && eina_list_data_get(itr) != pli)
+           {
+              itr = eina_list_next(itr);
+           }
+         for (i = 0; i < 10; i++)
+           {
+              itr = eina_list_next(itr);
+              if (!itr) continue;
+              _pli_download(inst, eina_list_data_get(itr), EINA_FALSE);
+           }
+     }
 }
 
 static void
@@ -260,8 +334,7 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
      }
    if (first)
      {
-        _youtube_download(inst, first);
-        inst->item_to_play = first;
+        _pli_download(inst, first, EINA_TRUE);
      }
    _box_update(inst, EINA_TRUE);
 }
@@ -281,51 +354,6 @@ _playlist_start_bt_clicked(void *data, Evas_Object *obj, void *event_info EINA_U
    efl_key_data_set(dialer, "Playlist", pl);
    efl_net_dialer_dial(dialer, request);
    inst->cur_playlist = pl;
-}
-
-static void
-_media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
-{
-   inst->item_to_play = NULL;
-   if (pli) pli->playing = play;
-   if (!play || pli != inst->cur_playlist_item)
-     {
-        /* Pause || the selected path is different of the played path */
-        if (!play)
-          {
-             elm_object_part_content_set(inst->play_bt, "icon",
-                   _icon_create(inst->play_bt, "media-playback-start", NULL));
-          }
-        if (pli != inst->cur_playlist_item) elm_object_text_set(inst->play_song_lb, "");
-        emotion_object_play_set(inst->ply_emo, EINA_FALSE);
-        if (inst->cur_playlist_item) inst->cur_playlist_item->playing = EINA_FALSE;
-     }
-   if (play && pli)
-     {
-        elm_object_part_content_set(inst->play_bt, "icon",
-              _icon_create(inst->play_bt, "media-playback-pause", NULL));
-        if (pli == inst->cur_playlist_item)
-          {
-             /* Play again when finished - int conversion is needed
-              * because the returned values are not exactly the same. */
-             if ((int)emotion_object_position_get(inst->ply_emo) == (int)emotion_object_play_length_get(inst->ply_emo))
-                emotion_object_position_set(inst->ply_emo, 0);
-          }
-        else
-          {
-             inst->cur_playlist_item = pli;
-             if (pli->is_playable)
-               {
-                  elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
-                  elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
-                  elm_image_file_set(inst->pl_img, pli->thumbnail_url, NULL);
-                  emotion_object_file_set(inst->ply_emo, pli->download_path);
-               }
-             elm_object_text_set(inst->play_song_lb, pli->title);
-          }
-        emotion_object_play_set(inst->ply_emo, EINA_TRUE);
-        pli->playing = EINA_TRUE;
-     }
 }
 
 static Eina_Bool
@@ -402,14 +430,7 @@ _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    if (next_pli)
      {
         if (next_pli->is_playable) _media_play_set(inst, next_pli, EINA_TRUE);
-        else
-          {
-             if (!next_pli->download_exe)
-               {
-                  _youtube_download(inst, next_pli);
-               }
-             inst->item_to_play = next_pli;
-          }
+        else _pli_download(inst, next_pli, EINA_TRUE);
      }
 }
 
@@ -424,14 +445,7 @@ _media_prev_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    if (prev_pli)
      {
         if (prev_pli->is_playable) _media_play_set(inst, prev_pli, EINA_TRUE);
-        else
-          {
-             if (!prev_pli->download_exe)
-               {
-                  _youtube_download(inst, prev_pli);
-               }
-             inst->item_to_play = prev_pli;
-          }
+        else _pli_download(inst, prev_pli, EINA_TRUE);
      }
 }
 
@@ -469,14 +483,7 @@ _media_finished(void *data, const Efl_Event *ev EINA_UNUSED)
    if (next_pli)
      {
         if (next_pli->is_playable) _media_play_set(inst, next_pli, EINA_TRUE);
-        else
-          {
-             if (!next_pli->download_exe)
-               {
-                  _youtube_download(inst, next_pli);
-               }
-             inst->item_to_play = next_pli;
-          }
+        else _pli_download(inst, next_pli, EINA_TRUE);
      }
    else
      {
@@ -530,14 +537,7 @@ _playlist_item_selected(void *data, Evas_Object *gl EINA_UNUSED, void *event_inf
    Playlist_Item *pli = elm_object_item_data_get(event_info);
    Instance *inst = data;
    if (pli->is_playable) _media_play_set(inst, pli, EINA_TRUE);
-   else
-     {
-        if (!pli->download_exe)
-          {
-             _youtube_download(inst, pli);
-          }
-        inst->item_to_play = pli;
-     }
+   else _pli_download(inst, pli, EINA_TRUE);
 }
 
 static void
@@ -606,7 +606,6 @@ _box_update(Instance *inst, Eina_Bool clear)
           }
 
         inst->pl_img = elm_image_add(playlist_box);
-        //elm_image_file_set(inst->pl_img, buf, NULL);
         evas_object_size_hint_weight_set(inst->pl_img, 0.4, EVAS_HINT_EXPAND);
         evas_object_size_hint_align_set(inst->pl_img, EVAS_HINT_FILL, EVAS_HINT_FILL);
         elm_box_pack_end(playlist_box, inst->pl_img);
