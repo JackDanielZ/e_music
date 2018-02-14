@@ -23,6 +23,7 @@ typedef struct
 
    Eina_Stringshare *download_path;
    Eo *download_exe;
+   Eo *gl_item;
    Eina_Bool is_playable;
    Eina_Bool playing;
 } Playlist_Item;
@@ -210,7 +211,8 @@ _youtube_download(Instance *inst, Playlist_Item *pli)
    char cmd[1024];
    sprintf(cmd, "/tmp/yt-%s.opus", pli->id);
    pli->download_path = eina_stringshare_add(cmd);
-   sprintf(cmd, "youtube-dl --no-part -x \"http://youtube.com/watch?v=%s\" -o %s",
+   sprintf(cmd,
+         "youtube-dl --audio-format opus --no-part -x \"http://youtube.com/watch?v=%s\" -o %s",
          pli->id, pli->download_path);
    pli->download_exe = ecore_exe_pipe_run(cmd, ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_ERROR, pli);
    efl_key_data_set(pli->download_exe, "Instance", inst);
@@ -285,7 +287,7 @@ static void
 _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
 {
    inst->item_to_play = NULL;
-   pli->playing = play;
+   if (pli) pli->playing = play;
    if (!play || pli != inst->cur_playlist_item)
      {
         /* Pause || the selected path is different of the played path */
@@ -298,7 +300,7 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
         emotion_object_play_set(inst->ply_emo, EINA_FALSE);
         if (inst->cur_playlist_item) inst->cur_playlist_item->playing = EINA_FALSE;
      }
-   if (play)
+   if (play && pli)
      {
         elm_object_part_content_set(inst->play_bt, "icon",
               _icon_create(inst->play_bt, "media-playback-pause", NULL));
@@ -314,6 +316,8 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
              inst->cur_playlist_item = pli;
              if (pli->is_playable)
                {
+                  elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
+                  elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
                   elm_image_file_set(inst->pl_img, pli->thumbnail_url, NULL);
                   emotion_object_file_set(inst->ply_emo, pli->download_path);
                }
@@ -322,6 +326,13 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
         emotion_object_play_set(inst->ply_emo, EINA_TRUE);
         pli->playing = EINA_TRUE;
      }
+}
+
+static Eina_Bool
+_exe_error_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event EINA_UNUSED)
+{
+   //Ecore_Exe_Event_Data *event_data = (Ecore_Exe_Event_Data *)event;
+   return ECORE_CALLBACK_DONE;
 }
 
 static Eina_Bool
@@ -356,6 +367,7 @@ _exe_end_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event)
    Instance *inst = efl_key_data_get(exe, "Instance");
    Playlist_Item *pli = ecore_exe_data_get(exe);
    if (!pli || pli->download_exe != exe) return ECORE_CALLBACK_PASS_ON;
+   pli->is_playable = EINA_TRUE;
    if (pli == inst->item_to_play) _media_play_set(inst, pli, EINA_TRUE);
    return ECORE_CALLBACK_DONE;
 }
@@ -444,10 +456,20 @@ _media_finished(void *data, const Efl_Event *ev EINA_UNUSED)
    if (!itr) itr = inst->cur_playlist->items;
    if (!itr) return;
    Playlist_Item *next_pli = eina_list_data_get(eina_list_next(itr));
-   if (next_pli) _media_play_set(inst, next_pli, EINA_TRUE);
+   if (next_pli)
+     {
+        if (next_pli->is_playable) _media_play_set(inst, next_pli, EINA_TRUE);
+        else
+          {
+             if (!next_pli->download_exe)
+               {
+                  _youtube_download(inst, next_pli);
+               }
+             inst->item_to_play = next_pli;
+          }
+     }
    else
      {
-        inst->cur_playlist = NULL;
         inst->cur_playlist_item = NULL;
      }
 }
@@ -479,6 +501,22 @@ _pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EIN
 {
    Playlist_Item *pli = data;
    return strdup(pli->title);
+}
+
+static void
+_playlist_item_selected(void *data, Evas_Object *gl EINA_UNUSED, void *event_info)
+{
+   Playlist_Item *pli = elm_object_item_data_get(event_info);
+   Instance *inst = data;
+   if (pli->is_playable) _media_play_set(inst, pli, EINA_TRUE);
+   else
+     {
+        if (!pli->download_exe)
+          {
+             _youtube_download(inst, pli);
+          }
+        inst->item_to_play = pli;
+     }
 }
 
 static void
@@ -523,6 +561,7 @@ _box_update(Instance *inst, Eina_Bool clear)
         elm_box_horizontal_set(playlist_box, EINA_TRUE);
         evas_object_size_hint_weight_set(playlist_box, EVAS_HINT_EXPAND, 0.9);
         evas_object_size_hint_align_set(playlist_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        efl_gfx_size_hint_min_set(playlist_box, EINA_SIZE2D(800, 400));
         elm_box_pack_end(inst->main_box, playlist_box);
         evas_object_show(playlist_box);
 
@@ -531,6 +570,7 @@ _box_update(Instance *inst, Eina_Bool clear)
         evas_object_size_hint_weight_set(playlist_gl, 0.6, EVAS_HINT_EXPAND);
         elm_box_pack_end(playlist_box, playlist_gl);
         evas_object_show(playlist_gl);
+        evas_object_smart_callback_add(playlist_gl, "selected", _playlist_item_selected, inst);
 
         Elm_Genlist_Item_Class *_pl_itc = elm_genlist_item_class_new();
         _pl_itc->item_style = "default";
@@ -538,8 +578,9 @@ _box_update(Instance *inst, Eina_Bool clear)
 
         EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
           {
-             elm_genlist_item_append(playlist_gl, _pl_itc, pli,
+             pli->gl_item = elm_genlist_item_append(playlist_gl, _pl_itc, pli,
                    NULL, ELM_GENLIST_ITEM_NONE, NULL, NULL);
+             efl_wref_add(pli->gl_item, &(pli->gl_item));
           }
 
         inst->pl_img = elm_image_add(playlist_box);
@@ -582,7 +623,6 @@ _box_update(Instance *inst, Eina_Bool clear)
         inst->play_prg_lb = elm_label_add(ply_sl_box);
         evas_object_size_hint_align_set(inst->play_prg_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
         evas_object_size_hint_weight_set(inst->play_prg_lb, 0.1, EVAS_HINT_EXPAND);
-        _media_position_update(inst, NULL);
         elm_box_pack_end(ply_sl_box, inst->play_prg_lb);
         efl_weak_ref(&inst->play_prg_lb);
         evas_object_show(inst->play_prg_lb);
@@ -602,7 +642,6 @@ _box_update(Instance *inst, Eina_Bool clear)
         inst->play_total_lb = elm_label_add(ply_sl_box);
         evas_object_size_hint_align_set(inst->play_total_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
         evas_object_size_hint_weight_set(inst->play_total_lb, 0.1, EVAS_HINT_EXPAND);
-        _media_length_update(inst, NULL);
         elm_box_pack_end(ply_sl_box, inst->play_total_lb);
         efl_weak_ref(&inst->play_total_lb);
         evas_object_show(inst->play_total_lb);
@@ -634,7 +673,8 @@ _box_update(Instance *inst, Eina_Bool clear)
         /* Play/pause button */
         inst->play_bt = _button_create(ply_bts_box, NULL,
               _icon_create(ply_bts_box,
-                 inst->cur_playlist_item ?"media-playback-pause":"media-playback-start", NULL),
+                 inst->cur_playlist_item && inst->cur_playlist_item->playing ?
+                 "media-playback-pause" : "media-playback-start", NULL),
               NULL, _media_play_pause_cb, inst);
         elm_box_pack_end(ply_bts_box, inst->play_bt);
         efl_weak_ref(&inst->play_bt);
@@ -646,6 +686,14 @@ _box_update(Instance *inst, Eina_Bool clear)
               NULL, _media_next_cb, inst);
         elm_box_pack_end(ply_bts_box, inst->next_bt);
         efl_weak_ref(&inst->next_bt);
+
+        _media_length_update(inst, NULL);
+        _media_position_update(inst, NULL);
+        if (inst->cur_playlist_item)
+          {
+             elm_object_text_set(inst->play_song_lb, inst->cur_playlist_item->title);
+             elm_image_file_set(inst->pl_img, inst->cur_playlist_item->thumbnail_url, NULL);
+          }
      }
 }
 
@@ -842,6 +890,7 @@ _gc_init(E_Gadcon *gc, const char *name, const char *id, const char *style)
    evas_object_event_callback_add(inst->o_icon, EVAS_CALLBACK_MOUSE_DOWN,
 				  _button_cb_mouse_down, inst);
 
+   ecore_event_handler_add(ECORE_EXE_EVENT_ERROR, _exe_error_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _exe_output_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DEL, _exe_end_cb, inst);
 
@@ -977,6 +1026,7 @@ int main(int argc, char **argv)
    evas_object_resize(win, 480, 480);
    evas_object_show(win);
 
+   ecore_event_handler_add(ECORE_EXE_EVENT_ERROR, _exe_error_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _exe_output_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DEL, _exe_end_cb, inst);
 
