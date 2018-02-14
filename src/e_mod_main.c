@@ -66,7 +66,7 @@ typedef struct
    Eo *main, *main_box, *pl_img;
    Eo *ply_emo, *play_total_lb, *play_prg_lb, *play_prg_sl;
    Eo *play_bt, *play_song_lb;
-   Eo *next_bt, *prev_bt;
+   Eo *next_bt, *prev_bt, *stop_bt;
 
    char *data_buf;
    unsigned int data_buf_len;
@@ -382,6 +382,16 @@ _media_play_pause_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUS
 }
 
 static void
+_media_stop_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
+{
+   Instance *inst = data;
+   _media_play_set(inst, NULL, EINA_FALSE);
+   efl_del(inst->ply_emo);
+   inst->cur_playlist = NULL;
+   _box_update(inst, EINA_TRUE);
+}
+
+static void
 _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
    Instance *inst = data;
@@ -572,7 +582,7 @@ _box_update(Instance *inst, Eina_Bool clear)
         elm_box_horizontal_set(playlist_box, EINA_TRUE);
         evas_object_size_hint_weight_set(playlist_box, EVAS_HINT_EXPAND, 0.9);
         evas_object_size_hint_align_set(playlist_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        efl_gfx_size_hint_min_set(playlist_box, EINA_SIZE2D(800, 400));
+        efl_gfx_size_hint_min_set(inst->main_box, EINA_SIZE2D(800, 400));
         elm_box_pack_end(inst->main_box, playlist_box);
         evas_object_show(playlist_box);
 
@@ -698,6 +708,14 @@ _box_update(Instance *inst, Eina_Bool clear)
               NULL, _media_next_cb, inst);
         elm_box_pack_end(ply_bts_box, inst->next_bt);
         efl_weak_ref(&inst->next_bt);
+
+        /* Stop button */
+        inst->stop_bt = _button_create(ply_bts_box, NULL,
+              _icon_create(ply_bts_box, "media-playback-stop", NULL),
+              NULL, _media_stop_cb, inst);
+        elm_box_pack_end(ply_bts_box, inst->stop_bt);
+        efl_weak_ref(&inst->stop_bt);
+
 
         _media_length_update(inst, NULL);
         _media_position_update(inst, NULL);
