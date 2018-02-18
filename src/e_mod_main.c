@@ -49,6 +49,7 @@ struct _Platform
 
 typedef struct
 {
+   Eina_Bool loop_all; /* Loop on all the playlist items */
    Eina_List *platforms; /* List of Platform */
 } Config;
 
@@ -84,6 +85,102 @@ static E_Module *_module = NULL;
 static void
 _box_update(Instance *inst, Eina_Bool clear);
 
+static void
+_config_eet_load()
+{
+   Eet_Data_Descriptor *platform_edd, *playlist_edd;
+   if (_config_edd) return;
+   Eet_Data_Descriptor_Class eddc;
+
+   EET_EINA_STREAM_DATA_DESCRIPTOR_CLASS_SET(&eddc, Playlist);
+   playlist_edd = eet_data_descriptor_stream_new(&eddc);
+   EET_DATA_DESCRIPTOR_ADD_BASIC(playlist_edd, Playlist, "desc", desc, EET_T_STRING);
+   EET_DATA_DESCRIPTOR_ADD_BASIC(playlist_edd, Playlist, "list_id", list_id, EET_T_STRING);
+   EET_DATA_DESCRIPTOR_ADD_BASIC(playlist_edd, Playlist, "first_id", first_id, EET_T_STRING);
+   EET_DATA_DESCRIPTOR_ADD_LIST_STRING(playlist_edd, Playlist, "blacklist", blacklist);
+
+   EET_EINA_STREAM_DATA_DESCRIPTOR_CLASS_SET(&eddc, Platform);
+   platform_edd = eet_data_descriptor_stream_new(&eddc);
+   EET_DATA_DESCRIPTOR_ADD_BASIC(platform_edd, Platform, "type", type, EET_T_STRING);
+   EET_DATA_DESCRIPTOR_ADD_LIST(platform_edd, Platform, "lists", lists, playlist_edd);
+   EET_DATA_DESCRIPTOR_ADD_LIST_STRING(platform_edd, Platform, "blacklist", blacklist);
+
+   EET_EINA_STREAM_DATA_DESCRIPTOR_CLASS_SET(&eddc, Config);
+   _config_edd = eet_data_descriptor_stream_new(&eddc);
+   EET_DATA_DESCRIPTOR_ADD_BASIC(_config_edd, Config, "loop_all", loop_all, EET_T_UINT);
+   EET_DATA_DESCRIPTOR_ADD_LIST(_config_edd, Config, "platforms", platforms, platform_edd);
+}
+
+static void
+_config_save()
+{
+   char path[1024];
+   sprintf(path, "%s/e_music/config", efreet_config_home_get());
+   _config_eet_load();
+   Eet_File *file = eet_open(path, EET_FILE_MODE_WRITE);
+   eet_data_write(file, _config_edd, _EET_ENTRY, _config, EINA_TRUE);
+   eet_close(file);
+}
+
+static Eina_Bool
+_mkdir(const char *dir)
+{
+   if (!ecore_file_exists(dir))
+     {
+        Eina_Bool success = ecore_file_mkdir(dir);
+        if (!success)
+          {
+             printf("Cannot create a config folder \"%s\"\n", dir);
+             return EINA_FALSE;
+          }
+     }
+   return EINA_TRUE;
+}
+
+static void
+_config_load()
+{
+   Platform *p;
+   Playlist *pl;
+   char path[1024];
+
+   sprintf(path, "%s/e_music", efreet_config_home_get());
+   if (!_mkdir(path)) return;
+
+   sprintf(path, "%s/e_music/config", efreet_config_home_get());
+   _config_eet_load();
+   Eet_File *file = eet_open(path, EET_FILE_MODE_READ);
+   if (!file)
+     {
+        _config = calloc(1, sizeof(Config));
+        /* TEMP */
+        p = calloc(1, sizeof(*p));
+        p->type = strdup("youtube");
+        pl = calloc(1, sizeof(*pl));
+        pl->platform = p;
+        pl->desc = strdup("Toto");
+        pl->list_id = strdup("RDEMBacXKC3mWU4Pzru44ZwIdg");
+        pl->first_id = strdup("izTMmZ9WYlE");
+        p->lists = eina_list_append(p->lists, pl);
+        _config->platforms = eina_list_append(_config->platforms, p);
+     }
+   else
+     {
+        _config = eet_data_read(file, _config_edd, _EET_ENTRY);
+        eet_close(file);
+     }
+
+   Eina_List *itr, *itr2;
+   EINA_LIST_FOREACH(_config->platforms, itr, p)
+     {
+        EINA_LIST_FOREACH(p->lists, itr2, pl)
+          {
+             pl->platform = p;
+          }
+     }
+   _config_save();
+}
+
 static Eo *
 _label_create(Eo *parent, const char *text, Eo **wref)
 {
@@ -91,8 +188,8 @@ _label_create(Eo *parent, const char *text, Eo **wref)
    if (!label)
      {
         label = elm_label_add(parent);
-        evas_object_size_hint_align_set(label, 0.0, EVAS_HINT_FILL);
-        evas_object_size_hint_weight_set(label, EVAS_HINT_EXPAND, 0.0);
+        evas_object_size_hint_align_set(label, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        evas_object_size_hint_weight_set(label, 0.0, 0.0);
         evas_object_show(label);
         if (wref) efl_wref_add(label, wref);
      }
@@ -130,6 +227,23 @@ _icon_create(Eo *parent, const char *path, Eo **wref)
         if (wref) efl_wref_add(ic, wref);
      }
    return ic;
+}
+
+static Eo *
+_check_create(Eo *parent, Eina_Bool enable, Eo **wref, Evas_Smart_Cb cb_func, void *cb_data)
+{
+   Eo *o = wref ? *wref : NULL;
+   if (!o)
+     {
+        o = elm_check_add(parent);
+        evas_object_size_hint_align_set(o, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        evas_object_size_hint_weight_set(o, 0.0, 0.0);
+        elm_check_selected_set(o, enable);
+        evas_object_show(o);
+        if (wref) efl_wref_add(o, wref);
+        if (cb_func) evas_object_smart_callback_add(o, "changed", cb_func, cb_data);
+     }
+   return o;
 }
 
 static void
@@ -427,6 +541,7 @@ _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    if (!itr) itr = inst->cur_playlist->items;
    if (!itr) return;
    Playlist_Item *next_pli = eina_list_data_get(eina_list_next(itr));
+   if (!next_pli && _config->loop_all) next_pli = eina_list_data_get(inst->cur_playlist->items);
    if (next_pli)
      {
         if (next_pli->is_playable) _media_play_set(inst, next_pli, EINA_TRUE);
@@ -442,6 +557,7 @@ _media_prev_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    if (!itr) itr = inst->cur_playlist->items;
    if (!itr) return;
    Playlist_Item *prev_pli = eina_list_data_get(eina_list_prev(itr));
+   if (!prev_pli && _config->loop_all) prev_pli = eina_list_data_get(eina_list_last(inst->cur_playlist->items));
    if (prev_pli)
      {
         if (prev_pli->is_playable) _media_play_set(inst, prev_pli, EINA_TRUE);
@@ -475,20 +591,15 @@ static void
 _media_finished(void *data, const Efl_Event *ev EINA_UNUSED)
 {
    Instance *inst = data;
-   Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, inst->cur_playlist_item);
    _media_play_set(inst, inst->cur_playlist_item, EINA_FALSE);
-   if (!itr) itr = inst->cur_playlist->items;
-   if (!itr) return;
-   Playlist_Item *next_pli = eina_list_data_get(eina_list_next(itr));
-   if (next_pli)
-     {
-        if (next_pli->is_playable) _media_play_set(inst, next_pli, EINA_TRUE);
-        else _pli_download(inst, next_pli, EINA_TRUE);
-     }
-   else
-     {
-        inst->cur_playlist_item = NULL;
-     }
+   _media_next_cb(inst, NULL, NULL);
+}
+
+static void
+_loop_state_changed(void *data EINA_UNUSED, Eo *chk, void *event_info EINA_UNUSED)
+{
+   _config->loop_all = elm_check_selected_get(chk);
+   _config_save();
 }
 
 static char *
@@ -715,6 +826,13 @@ _box_update(Instance *inst, Eina_Bool clear)
         elm_box_pack_end(ply_bts_box, inst->next_bt);
         efl_weak_ref(&inst->next_bt);
 
+        /* Loop label */
+        Eo *o = _label_create(ply_bts_box, "   Loop ", NULL);
+        elm_box_pack_end(ply_bts_box, o);
+        /* Loop checkbox */
+        o = _check_create(ply_bts_box, _config->loop_all, NULL, _loop_state_changed, NULL);
+        elm_box_pack_end(ply_bts_box, o);
+
         _media_length_update(inst, NULL);
         _media_position_update(inst, NULL);
         if (inst->cur_playlist_item)
@@ -730,101 +848,6 @@ _instance_create()
 {
    Instance *inst = calloc(1, sizeof(Instance));
    return inst;
-}
-
-static void
-_config_eet_load()
-{
-   Eet_Data_Descriptor *platform_edd, *playlist_edd;
-   if (_config_edd) return;
-   Eet_Data_Descriptor_Class eddc;
-
-   EET_EINA_STREAM_DATA_DESCRIPTOR_CLASS_SET(&eddc, Playlist);
-   playlist_edd = eet_data_descriptor_stream_new(&eddc);
-   EET_DATA_DESCRIPTOR_ADD_BASIC(playlist_edd, Playlist, "desc", desc, EET_T_STRING);
-   EET_DATA_DESCRIPTOR_ADD_BASIC(playlist_edd, Playlist, "list_id", list_id, EET_T_STRING);
-   EET_DATA_DESCRIPTOR_ADD_BASIC(playlist_edd, Playlist, "first_id", first_id, EET_T_STRING);
-   EET_DATA_DESCRIPTOR_ADD_LIST_STRING(playlist_edd, Playlist, "blacklist", blacklist);
-
-   EET_EINA_STREAM_DATA_DESCRIPTOR_CLASS_SET(&eddc, Platform);
-   platform_edd = eet_data_descriptor_stream_new(&eddc);
-   EET_DATA_DESCRIPTOR_ADD_BASIC(platform_edd, Platform, "type", type, EET_T_STRING);
-   EET_DATA_DESCRIPTOR_ADD_LIST(platform_edd, Platform, "lists", lists, playlist_edd);
-   EET_DATA_DESCRIPTOR_ADD_LIST_STRING(platform_edd, Platform, "blacklist", blacklist);
-
-   EET_EINA_STREAM_DATA_DESCRIPTOR_CLASS_SET(&eddc, Config);
-   _config_edd = eet_data_descriptor_stream_new(&eddc);
-   EET_DATA_DESCRIPTOR_ADD_LIST(_config_edd, Config, "platforms", platforms, platform_edd);
-}
-
-static void
-_config_save()
-{
-   char path[1024];
-   sprintf(path, "%s/e_music/config", efreet_config_home_get());
-   _config_eet_load();
-   Eet_File *file = eet_open(path, EET_FILE_MODE_WRITE);
-   eet_data_write(file, _config_edd, _EET_ENTRY, _config, EINA_TRUE);
-   eet_close(file);
-}
-
-static Eina_Bool
-_mkdir(const char *dir)
-{
-   if (!ecore_file_exists(dir))
-     {
-        Eina_Bool success = ecore_file_mkdir(dir);
-        if (!success)
-          {
-             printf("Cannot create a config folder \"%s\"\n", dir);
-             return EINA_FALSE;
-          }
-     }
-   return EINA_TRUE;
-}
-
-static void
-_config_load()
-{
-   Platform *p;
-   Playlist *pl;
-   char path[1024];
-
-   sprintf(path, "%s/e_music", efreet_config_home_get());
-   if (!_mkdir(path)) return;
-
-   sprintf(path, "%s/e_music/config", efreet_config_home_get());
-   _config_eet_load();
-   Eet_File *file = eet_open(path, EET_FILE_MODE_READ);
-   if (!file)
-     {
-        _config = calloc(1, sizeof(Config));
-        /* TEMP */
-        p = calloc(1, sizeof(*p));
-        p->type = strdup("youtube");
-        pl = calloc(1, sizeof(*pl));
-        pl->platform = p;
-        pl->desc = strdup("Toto");
-        pl->list_id = strdup("RDEMBacXKC3mWU4Pzru44ZwIdg");
-        pl->first_id = strdup("izTMmZ9WYlE");
-        p->lists = eina_list_append(p->lists, pl);
-        _config->platforms = eina_list_append(_config->platforms, p);
-     }
-   else
-     {
-        _config = eet_data_read(file, _config_edd, _EET_ENTRY);
-        eet_close(file);
-     }
-
-   Eina_List *itr, *itr2;
-   EINA_LIST_FOREACH(_config->platforms, itr, p)
-     {
-        EINA_LIST_FOREACH(p->lists, itr2, pl)
-          {
-             pl->platform = p;
-          }
-     }
-   _config_save();
 }
 
 static void
