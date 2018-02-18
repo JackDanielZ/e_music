@@ -700,14 +700,6 @@ _box_update(Instance *inst, Eina_Bool clear)
         elm_box_pack_end(ply_bts_box, inst->play_bt);
         efl_weak_ref(&inst->play_bt);
 
-        /* Next button */
-        inst->next_bt = _button_create(ply_bts_box, NULL,
-              _icon_create(ply_bts_box,
-                 "media-seek-forward", NULL),
-              NULL, _media_next_cb, inst);
-        elm_box_pack_end(ply_bts_box, inst->next_bt);
-        efl_weak_ref(&inst->next_bt);
-
         /* Stop button */
         inst->stop_bt = _button_create(ply_bts_box, NULL,
               _icon_create(ply_bts_box, "media-playback-stop", NULL),
@@ -715,6 +707,13 @@ _box_update(Instance *inst, Eina_Bool clear)
         elm_box_pack_end(ply_bts_box, inst->stop_bt);
         efl_weak_ref(&inst->stop_bt);
 
+        /* Next button */
+        inst->next_bt = _button_create(ply_bts_box, NULL,
+              _icon_create(ply_bts_box,
+                 "media-seek-forward", NULL),
+              NULL, _media_next_cb, inst);
+        elm_box_pack_end(ply_bts_box, inst->next_bt);
+        efl_weak_ref(&inst->next_bt);
 
         _media_length_update(inst, NULL);
         _media_position_update(inst, NULL);
