@@ -1,6 +1,7 @@
 #define EFL_BETA_API_SUPPORT
 #define EFL_EO_API_SUPPORT
 
+#include <time.h>
 #ifndef STAND_ALONE
 #include <e.h>
 #else
@@ -24,8 +25,9 @@ typedef struct
    Eina_Stringshare *download_path;
    Eo *download_exe;
    Eo *gl_item;
-   Eina_Bool is_playable;
-   Eina_Bool playing;
+   Eina_Bool is_playable : 1;
+   Eina_Bool playing : 1;
+   Eina_Bool randomly_played : 1;
 } Playlist_Item;
 
 typedef struct
@@ -50,6 +52,7 @@ struct _Platform
 typedef struct
 {
    Eina_Bool loop_all; /* Loop on all the playlist items */
+   Eina_Bool random; /* Random when choosing playlist items */
    Eina_List *platforms; /* List of Platform */
 } Config;
 
@@ -108,6 +111,7 @@ _config_eet_load()
    EET_EINA_STREAM_DATA_DESCRIPTOR_CLASS_SET(&eddc, Config);
    _config_edd = eet_data_descriptor_stream_new(&eddc);
    EET_DATA_DESCRIPTOR_ADD_BASIC(_config_edd, Config, "loop_all", loop_all, EET_T_UINT);
+   EET_DATA_DESCRIPTOR_ADD_BASIC(_config_edd, Config, "random", random, EET_T_UINT);
    EET_DATA_DESCRIPTOR_ADD_LIST(_config_edd, Config, "platforms", platforms, platform_edd);
 }
 
@@ -514,6 +518,41 @@ _exe_end_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event)
    return ECORE_CALLBACK_DONE;
 }
 
+static Playlist_Item *
+_random_item_choose(Instance *inst)
+{
+   Eina_List *itr;
+   Playlist_Item *pli;
+   int v;
+   int max = 0;
+   EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
+     {
+        if (!pli->randomly_played) max++;
+     }
+   if (!max)
+     {
+        EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
+          {
+             pli->randomly_played = EINA_FALSE;
+          }
+        max = eina_list_count(inst->cur_playlist->items);
+     }
+   v = rand() % max;
+   EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
+     {
+        if (!pli->randomly_played)
+          {
+             if (!v)
+               {
+                  pli->randomly_played = EINA_TRUE;
+                  return pli;
+               }
+             v--;
+          }
+     }
+   return NULL;
+}
+
 static void
 _media_play_pause_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
@@ -540,7 +579,8 @@ _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, inst->cur_playlist_item);
    if (!itr) itr = inst->cur_playlist->items;
    if (!itr) return;
-   Playlist_Item *next_pli = eina_list_data_get(eina_list_next(itr));
+   Playlist_Item *next_pli =
+      _config->random ? _random_item_choose (inst) : eina_list_data_get(eina_list_next(itr));
    if (!next_pli && _config->loop_all) next_pli = eina_list_data_get(inst->cur_playlist->items);
    if (next_pli)
      {
@@ -556,7 +596,8 @@ _media_prev_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, inst->cur_playlist_item);
    if (!itr) itr = inst->cur_playlist->items;
    if (!itr) return;
-   Playlist_Item *prev_pli = eina_list_data_get(eina_list_prev(itr));
+   Playlist_Item *prev_pli =
+      _config->random ? _random_item_choose (inst) : eina_list_data_get(eina_list_prev(itr));
    if (!prev_pli && _config->loop_all) prev_pli = eina_list_data_get(eina_list_last(inst->cur_playlist->items));
    if (prev_pli)
      {
@@ -600,6 +641,21 @@ _loop_state_changed(void *data EINA_UNUSED, Eo *chk, void *event_info EINA_UNUSE
 {
    _config->loop_all = elm_check_selected_get(chk);
    _config_save();
+}
+
+static void
+_random_state_changed(void *data EINA_UNUSED, Eo *chk, void *event_info EINA_UNUSED)
+{
+   Instance *inst = data;
+   Eina_List *itr;
+   Playlist_Item *pli;
+   _config->random = elm_check_selected_get(chk);
+   _config_save();
+   if (!inst->cur_playlist) return;
+   EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
+     {
+        pli->randomly_played = EINA_FALSE;
+     }
 }
 
 static char *
@@ -833,6 +889,13 @@ _box_update(Instance *inst, Eina_Bool clear)
         o = _check_create(ply_bts_box, _config->loop_all, NULL, _loop_state_changed, NULL);
         elm_box_pack_end(ply_bts_box, o);
 
+        /* Random label */
+        o = _label_create(ply_bts_box, "   Random ", NULL);
+        elm_box_pack_end(ply_bts_box, o);
+        /* Random checkbox */
+        o = _check_create(ply_bts_box, _config->random, NULL, _random_state_changed, inst);
+        elm_box_pack_end(ply_bts_box, o);
+
         _media_length_update(inst, NULL);
         _media_position_update(inst, NULL);
         if (inst->cur_playlist_item)
@@ -944,6 +1007,8 @@ _gc_init(E_Gadcon *gc, const char *name, const char *id, const char *style)
    ecore_event_handler_add(ECORE_EXE_EVENT_ERROR, _exe_error_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _exe_output_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DEL, _exe_end_cb, inst);
+
+   srand(time(NULL));
 
    return gcc;
 }
@@ -1080,6 +1145,8 @@ int main(int argc, char **argv)
    ecore_event_handler_add(ECORE_EXE_EVENT_ERROR, _exe_error_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _exe_output_cb, inst);
    ecore_event_handler_add(ECORE_EXE_EVENT_DEL, _exe_end_cb, inst);
+
+   srand(time(NULL));
 
    _box_update(inst, EINA_FALSE);
 
