@@ -529,7 +529,7 @@ _random_item_choose(Instance *inst)
      {
         if (!pli->randomly_played) max++;
      }
-   if (!max)
+   if (!max && _config->loop_all)
      {
         EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
           {
@@ -537,17 +537,20 @@ _random_item_choose(Instance *inst)
           }
         max = eina_list_count(inst->cur_playlist->items);
      }
-   v = rand() % max;
-   EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
+   if (max)
      {
-        if (!pli->randomly_played)
+        v = rand() % max;
+        EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
           {
-             if (!v)
+             if (!pli->randomly_played)
                {
-                  pli->randomly_played = EINA_TRUE;
-                  return pli;
+                  if (!v)
+                    {
+                       pli->randomly_played = EINA_TRUE;
+                       return pli;
+                    }
+                  v--;
                }
-             v--;
           }
      }
    return NULL;
