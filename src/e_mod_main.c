@@ -19,7 +19,7 @@ typedef struct _Platform Platform;
 typedef struct
 {
    Eina_Stringshare *id;
-   Eina_Stringshare *thumbnail_url;
+   Eina_Stringshare *thumbnail_path;
    Eina_Stringshare *title;
 
    Eina_Stringshare *download_path;
@@ -62,6 +62,13 @@ static Eet_Data_Descriptor *_config_edd = NULL;
 
 typedef struct
 {
+   char *data;
+   unsigned int max_len;
+   unsigned int len;
+} Download_Buffer;
+
+typedef struct
+{
 #ifndef STAND_ALONE
    E_Gadcon_Client *gcc;
    E_Gadcon_Popup *popup;
@@ -71,10 +78,6 @@ typedef struct
    Eo *ply_emo, *play_total_lb, *play_prg_lb, *play_prg_sl;
    Eo *play_bt, *play_song_lb;
    Eo *next_bt, *prev_bt, *stop_bt;
-
-   char *data_buf;
-   unsigned int data_buf_len;
-   unsigned int data_len;
 
    Playlist *cur_playlist;
    Playlist_Item *cur_playlist_item;
@@ -256,7 +259,7 @@ _can_read_changed(void *data EINA_UNUSED, const Efl_Event *ev)
    static int max_size = 16384;
    Eina_Rw_Slice slice;
    Eo *dialer = ev->object;
-   Instance *inst = efl_key_data_get(dialer, "Instance");
+   Download_Buffer *buf = efl_key_data_get(dialer, "Download_Buffer");
    if (efl_key_data_get(dialer, "can_read_changed")) return;
    efl_key_data_set(dialer, "can_read_changed", dialer);
 
@@ -266,14 +269,14 @@ _can_read_changed(void *data EINA_UNUSED, const Efl_Event *ev)
    while (efl_io_reader_can_read_get(dialer))
      {
         if (efl_io_reader_read(dialer, &slice)) goto ret;
-        if (slice.len > (inst->data_buf_len - inst->data_len))
+        if (slice.len > (buf->max_len - buf->len))
           {
-             inst->data_buf_len = inst->data_len + slice.len;
-             inst->data_buf = realloc(inst->data_buf, inst->data_buf_len + 1);
+             buf->max_len = buf->len + slice.len;
+             buf->data = realloc(buf->data, buf->max_len + 1);
           }
-        memcpy(inst->data_buf + inst->data_len, slice.mem, slice.len);
-        inst->data_len += slice.len;
-        inst->data_buf[inst->data_len] = '\0';
+        memcpy(buf->data + buf->len, slice.mem, slice.len);
+        buf->len += slice.len;
+        buf->data[buf->len] = '\0';
         slice.len = max_size;
      }
 ret:
@@ -285,6 +288,9 @@ static void
 _dialer_delete(void *data EINA_UNUSED, const Efl_Event *ev)
 {
    Eo *dialer = ev->object;
+   Download_Buffer *buf = efl_key_data_get(dialer, "Download_Buffer");
+   free(buf->data);
+   free(buf);
    efl_del(efl_key_data_get(dialer, "post-buffer"));
    efl_del(efl_key_data_get(dialer, "copier-buffer-dialer"));
    efl_del(dialer);
@@ -299,7 +305,7 @@ _dialer_create(Eina_Bool is_get_method, const char *data, Efl_Event_Cb cb)
          efl_net_dialer_http_request_header_add(efl_added, "Accept-Encoding", "identity"),
          efl_event_callback_add(efl_added, EFL_IO_READER_EVENT_CAN_READ_CHANGED, _can_read_changed, NULL));
    if (cb)
-      efl_event_callback_add(dialer, EFL_IO_READER_EVENT_EOS, cb, NULL);
+      efl_event_callback_priority_add(dialer, EFL_IO_READER_EVENT_EOS, EFL_CALLBACK_PRIORITY_BEFORE, cb, NULL);
    efl_event_callback_add(dialer, EFL_IO_READER_EVENT_EOS, _dialer_delete, NULL);
 
    if (!is_get_method && data)
@@ -319,6 +325,8 @@ _dialer_create(Eina_Bool is_get_method, const char *data, Efl_Event_Cb cb)
               efl_io_closer_close_on_destructor_set(efl_added, EINA_FALSE));
         efl_key_data_set(dialer, "copier-buffer-dialer", copier);
      }
+   Download_Buffer *buf = calloc(1, sizeof(*buf));
+   efl_key_data_set(dialer, "Download_Buffer", buf);
 
    return dialer;
 }
@@ -358,7 +366,8 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
                {
                   elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
                   elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
-                  elm_image_file_set(inst->pl_img, pli->thumbnail_url, NULL);
+                  if (pli->thumbnail_path)
+                     elm_image_file_set(inst->pl_img, pli->thumbnail_path, NULL);
                   emotion_object_file_set(inst->ply_emo, pli->download_path);
                }
              elm_object_text_set(inst->play_song_lb, pli->title);
@@ -412,11 +421,26 @@ _pli_download(Instance *inst, Playlist_Item *pli, Eina_Bool play)
 }
 
 static void
+_pli_icon_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
+{
+   Download_Buffer *buf = efl_key_data_get(event->object, "Download_Buffer");
+   Playlist_Item *pli = efl_key_data_get(event->object, "pli");
+   char fpath[256];
+   sprintf(fpath, "/tmp/yt-%s.png", pli->id);
+   FILE *fp = fopen(fpath, "w");
+   fwrite(buf->data, 1, buf->len, fp);
+   fclose(fp);
+   pli->thumbnail_path = eina_stringshare_add(fpath);
+   if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
+}
+
+static void
 _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
 {
    Instance *inst = efl_key_data_get(event->object, "Instance");
    Playlist *pl = efl_key_data_get(event->object, "Playlist");
-   char *id_str = strstr(inst->data_buf, "data-video-id=");
+   Download_Buffer *buf = efl_key_data_get(event->object, "Download_Buffer");
+   char *id_str = strstr(buf->data, "data-video-id=");
    Playlist_Item *first = NULL;
    while (id_str)
      {
@@ -435,9 +459,14 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         str = strstr(begin, "data-thumbnail-url=");
         if (str && str < end)
           {
+             char url[1024];
              str += 20;
              end_str = strchr(str, '\"');
-             it->thumbnail_url = eina_stringshare_add_length(str, end_str-str);
+             memcpy(url, str, end_str-str);
+             url[end_str-str] = '\0';
+             Efl_Net_Dialer_Http *dialer = _dialer_create(EINA_TRUE, NULL, _pli_icon_downloaded);
+             efl_key_data_set(dialer, "pli", it);
+             efl_net_dialer_dial(dialer, url);
           }
 
         str = strstr(begin, "data-video-title=");
@@ -696,7 +725,7 @@ _pl_item_icon_get(void *data EINA_UNUSED, Evas_Object *obj, const char *part)
    Playlist_Item *pli = data;
    if (!strcmp(part, "elm.swallow.end")) return NULL;
    Evas_Object *ic = elm_icon_add(obj);
-   elm_image_file_set(ic, pli->thumbnail_url, NULL);
+   if (pli->thumbnail_path) elm_image_file_set(ic, pli->thumbnail_path, NULL);
    evas_object_size_hint_aspect_set(ic, EVAS_ASPECT_CONTROL_VERTICAL, 1, 1);
    return ic;
 }
@@ -904,7 +933,8 @@ _box_update(Instance *inst, Eina_Bool clear)
         if (inst->cur_playlist_item)
           {
              elm_object_text_set(inst->play_song_lb, inst->cur_playlist_item->title);
-             elm_image_file_set(inst->pl_img, inst->cur_playlist_item->thumbnail_url, NULL);
+             if (inst->cur_playlist_item->thumbnail_path)
+                elm_image_file_set(inst->pl_img, inst->cur_playlist_item->thumbnail_path, NULL);
           }
      }
 }
