@@ -90,6 +90,8 @@ static E_Module *_module = NULL;
 
 static void
 _box_update(Instance *inst, Eina_Bool clear);
+static void
+_media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED);
 
 static void
 _config_eet_load()
@@ -334,9 +336,10 @@ _dialer_create(Eina_Bool is_get_method, const char *data, Efl_Event_Cb cb)
 static void
 _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
 {
+   Playlist_Item *old_pli = inst->cur_playlist_item;
    inst->item_to_play = NULL;
    if (pli) pli->playing = play;
-   if (!play || pli != inst->cur_playlist_item)
+   if (!play || pli != old_pli)
      {
         /* Pause || the selected path is different of the played path */
         if (!play)
@@ -344,15 +347,20 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
              elm_object_part_content_set(inst->play_bt, "icon",
                    _icon_create(inst->play_bt, "media-playback-start", NULL));
           }
-        if (pli != inst->cur_playlist_item) elm_object_text_set(inst->play_song_lb, "");
+        if (pli != old_pli) elm_object_text_set(inst->play_song_lb, "");
         emotion_object_play_set(inst->ply_emo, EINA_FALSE);
-        if (inst->cur_playlist_item) inst->cur_playlist_item->playing = EINA_FALSE;
+        if (old_pli)
+          {
+             old_pli->playing = EINA_FALSE;
+             if (old_pli->gl_item) elm_genlist_item_update(old_pli->gl_item);
+          }
      }
    if (play && pli)
      {
+        pli->playing = EINA_TRUE;
         elm_object_part_content_set(inst->play_bt, "icon",
               _icon_create(inst->play_bt, "media-playback-pause", NULL));
-        if (pli == inst->cur_playlist_item)
+        if (pli == old_pli)
           {
              /* Play again when finished - int conversion is needed
               * because the returned values are not exactly the same. */
@@ -366,6 +374,7 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
                {
                   elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
                   elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
+                  elm_genlist_item_update(pli->gl_item);
                   if (pli->thumbnail_path)
                      elm_image_file_set(inst->pl_img, pli->thumbnail_path, NULL);
                   emotion_object_file_set(inst->ply_emo, pli->download_path);
@@ -373,7 +382,6 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
              elm_object_text_set(inst->play_song_lb, pli->title);
           }
         emotion_object_play_set(inst->ply_emo, EINA_TRUE);
-        pli->playing = EINA_TRUE;
      }
 }
 
@@ -441,7 +449,6 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
    Playlist *pl = efl_key_data_get(event->object, "Playlist");
    Download_Buffer *buf = efl_key_data_get(event->object, "Download_Buffer");
    char *id_str = strstr(buf->data, "data-video-id=");
-   Playlist_Item *first = NULL;
    while (id_str)
      {
         Playlist_Item *it;
@@ -454,7 +461,6 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         end_str = strchr(id_str, '\"');
         it = calloc(1, sizeof(*it));
         it->id = eina_stringshare_add_length(id_str, end_str-id_str);
-        if (!first) first = it;
 
         str = strstr(begin, "data-thumbnail-url=");
         if (str && str < end)
@@ -479,10 +485,7 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         pl->items = eina_list_append(pl->items, it);
         id_str = strstr(end, "data-video-id=");
      }
-   if (first)
-     {
-        _pli_download(inst, first, EINA_TRUE);
-     }
+   _media_next_cb(inst, NULL, NULL);
    _box_update(inst, EINA_TRUE);
 }
 
@@ -610,9 +613,10 @@ _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    Instance *inst = data;
    Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, inst->cur_playlist_item);
    if (!itr) itr = inst->cur_playlist->items;
+   else itr = eina_list_next(itr);
    if (!itr) return;
    Playlist_Item *next_pli =
-      _config->random ? _random_item_choose (inst) : eina_list_data_get(eina_list_next(itr));
+      _config->random ? _random_item_choose (inst) : eina_list_data_get(itr);
    if (!next_pli && _config->loop_all) next_pli = eina_list_data_get(inst->cur_playlist->items);
    if (next_pli)
      {
@@ -715,8 +719,13 @@ _sl_changed(void *data, const Efl_Event *ev EINA_UNUSED)
 static char *
 _pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EINA_UNUSED)
 {
+   char buffer[256];
    Playlist_Item *pli = data;
-   return strdup(pli->title);
+   if (pli->playing)
+      sprintf(buffer, "<b><color=#0FF>%s</color></b>", pli->title);
+   else
+      sprintf(buffer, pli->title);
+   return strdup(buffer);
 }
 
 static Evas_Object *
@@ -793,7 +802,7 @@ _box_update(Instance *inst, Eina_Bool clear)
         evas_object_smart_callback_add(playlist_gl, "selected", _playlist_item_selected, inst);
 
         Elm_Genlist_Item_Class *_pl_itc = elm_genlist_item_class_new();
-        _pl_itc->item_style = "default";
+        _pl_itc->item_style = "default_style";
         _pl_itc->func.text_get = _pl_item_text_get;
         _pl_itc->func.content_get = _pl_item_icon_get;
 
@@ -802,6 +811,7 @@ _box_update(Instance *inst, Eina_Bool clear)
              pli->gl_item = elm_genlist_item_append(playlist_gl, _pl_itc, pli,
                    NULL, ELM_GENLIST_ITEM_NONE, NULL, NULL);
              efl_wref_add(pli->gl_item, &(pli->gl_item));
+             if (pli->playing) elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
           }
 
         inst->pl_img = elm_image_add(playlist_box);
