@@ -667,11 +667,7 @@ _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
    Instance *inst = data;
    Playlist_Item *next_pli = _next_item_find(inst, NULL);
-   if (next_pli)
-     {
-        if (next_pli->is_playable) _media_play_set(inst, next_pli, EINA_TRUE);
-        else _pli_download(inst, next_pli, EINA_TRUE);
-     }
+   if (next_pli) _pli_download(inst, next_pli, EINA_TRUE);
 }
 
 static void
@@ -679,11 +675,7 @@ _media_prev_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
    Instance *inst = data;
    Playlist_Item *prev_pli = _prev_item_find(inst);
-   if (prev_pli)
-     {
-        if (prev_pli->is_playable) _media_play_set(inst, prev_pli, EINA_TRUE);
-        else _pli_download(inst, prev_pli, EINA_TRUE);
-     }
+   if (prev_pli) _pli_download(inst, prev_pli, EINA_TRUE);
 }
 
 static void
@@ -813,8 +805,7 @@ _playlist_item_selected(void *data, Evas_Object *gl EINA_UNUSED, void *event_inf
    Instance *inst = data;
    inst->selected_pli = pli;
    if (pli->is_blocked) pli = _next_item_find(inst, pli);
-   if (pli->is_playable) _media_play_set(inst, pli, EINA_TRUE);
-   else _pli_download(inst, pli, EINA_TRUE);
+   _pli_download(inst, pli, EINA_TRUE);
 }
 
 static void
