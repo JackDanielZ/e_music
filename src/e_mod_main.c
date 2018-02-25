@@ -28,6 +28,7 @@ typedef struct
    Eina_Bool is_playable : 1;
    Eina_Bool playing : 1;
    Eina_Bool randomly_played : 1;
+   Eina_Bool is_blocked : 1;
 } Playlist_Item;
 
 typedef struct
@@ -35,7 +36,7 @@ typedef struct
    char *desc;
    char *list_id;
    char *first_id;
-   char *blacklist; /* List of Eina_Stringshare */
+   Eina_List *blacklist; /* List of char * */
 
    Platform *platform;
    Eo *start_button;
@@ -81,6 +82,7 @@ typedef struct
 
    Playlist *cur_playlist;
    Playlist_Item *cur_playlist_item;
+   Playlist_Item *selected_pli;
    Playlist_Item *item_to_play;
 } Instance;
 
@@ -179,12 +181,18 @@ _config_load()
         eet_close(file);
      }
 
-   Eina_List *itr, *itr2;
+   Eina_List *itr, *itr2, *itr3;
    EINA_LIST_FOREACH(_config->platforms, itr, p)
      {
         EINA_LIST_FOREACH(p->lists, itr2, pl)
           {
+             char *id;
              pl->platform = p;
+             EINA_LIST_FOREACH(pl->blacklist, itr3, id)
+               {
+                  eina_list_data_set(itr3, eina_stringshare_add(id));
+//                  free(id);
+               }
           }
      }
    _config_save();
@@ -409,7 +417,7 @@ _pli_download(Instance *inst, Playlist_Item *pli, Eina_Bool play)
         if (pli->is_playable) _media_play_set(inst, pli, EINA_TRUE);
         else inst->item_to_play = pli;
      }
-   if (!pli->is_playable && !pli->download_exe)
+   if (!pli->is_playable && !pli->download_exe && !pli->is_blocked)
      {
         _youtube_download(inst, pli);
      }
@@ -451,6 +459,8 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
    char *id_str = strstr(buf->data, "data-video-id=");
    while (id_str)
      {
+        Eina_Stringshare *blackid;
+        Eina_List *itr;
         Playlist_Item *it;
         char *begin = id_str;
         char *end = strchr(id_str, '\n');
@@ -462,6 +472,8 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         it = calloc(1, sizeof(*it));
         it->id = eina_stringshare_add_length(id_str, end_str-id_str);
 
+        EINA_LIST_FOREACH(pl->blacklist, itr, blackid)
+           if (blackid == it->id) it->is_blocked = EINA_TRUE;
         str = strstr(begin, "data-thumbnail-url=");
         if (str && str < end)
           {
@@ -556,10 +568,14 @@ _random_item_choose(Instance *inst)
    Eina_List *itr;
    Playlist_Item *pli;
    int v;
-   int max = 0;
+   int max = 0, nb_unblocked = 0;
    EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
      {
-        if (!pli->randomly_played) max++;
+        if (!pli->is_blocked)
+          {
+             nb_unblocked++;
+             if (!pli->randomly_played) max++;
+          }
      }
    if (!max && _config->loop_all)
      {
@@ -567,14 +583,14 @@ _random_item_choose(Instance *inst)
           {
              pli->randomly_played = EINA_FALSE;
           }
-        max = eina_list_count(inst->cur_playlist->items);
+        max = nb_unblocked;
      }
    if (max)
      {
         v = rand() % max;
         EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
           {
-             if (!pli->randomly_played)
+             if (!pli->is_blocked && !pli->randomly_played)
                {
                   if (!v)
                     {
@@ -607,17 +623,50 @@ _media_stop_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    _box_update(inst, EINA_TRUE);
 }
 
+static Playlist_Item *
+_next_item_find(Instance *inst, Playlist_Item *cur_pli)
+{
+   if (_config->random) return _random_item_choose(inst);
+   if (!cur_pli) cur_pli = inst->cur_playlist_item;
+   Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, cur_pli);
+   int nb_items = eina_list_count(inst->cur_playlist->items), i = 0;
+   Playlist_Item *next_pli;
+   do
+     {
+        if (!itr && (!i || _config->loop_all)) itr = inst->cur_playlist->items;
+        else itr = eina_list_next(itr);
+        if (!itr && _config->loop_all) itr = inst->cur_playlist->items;
+        next_pli = eina_list_data_get(itr);
+        i++;
+     } while (next_pli->is_blocked && i < nb_items);
+   if (!next_pli->is_blocked) return next_pli;
+   else return NULL;
+}
+
+static Playlist_Item *
+_prev_item_find(Instance *inst)
+{
+   if (_config->random) return _random_item_choose(inst);
+   Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, inst->cur_playlist_item);
+   int nb_items = eina_list_count(inst->cur_playlist->items), i = 0;
+   Playlist_Item *prev_pli;
+   do
+     {
+        if (!itr && (!i || _config->loop_all)) itr = inst->cur_playlist->items;
+        else itr = eina_list_prev(itr);
+        if (!itr && _config->loop_all) itr = eina_list_last(inst->cur_playlist->items);
+        prev_pli = eina_list_data_get(itr);
+        i++;
+     } while (prev_pli->is_blocked && i < nb_items);
+   if (!prev_pli->is_blocked) return prev_pli;
+   else return NULL;
+}
+
 static void
 _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
    Instance *inst = data;
-   Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, inst->cur_playlist_item);
-   if (!itr) itr = inst->cur_playlist->items;
-   else itr = eina_list_next(itr);
-   if (!itr) return;
-   Playlist_Item *next_pli =
-      _config->random ? _random_item_choose (inst) : eina_list_data_get(itr);
-   if (!next_pli && _config->loop_all) next_pli = eina_list_data_get(inst->cur_playlist->items);
+   Playlist_Item *next_pli = _next_item_find(inst, NULL);
    if (next_pli)
      {
         if (next_pli->is_playable) _media_play_set(inst, next_pli, EINA_TRUE);
@@ -629,12 +678,7 @@ static void
 _media_prev_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
    Instance *inst = data;
-   Eina_List *itr = eina_list_data_find_list(inst->cur_playlist->items, inst->cur_playlist_item);
-   if (!itr) itr = inst->cur_playlist->items;
-   if (!itr) return;
-   Playlist_Item *prev_pli =
-      _config->random ? _random_item_choose (inst) : eina_list_data_get(eina_list_prev(itr));
-   if (!prev_pli && _config->loop_all) prev_pli = eina_list_data_get(eina_list_last(inst->cur_playlist->items));
+   Playlist_Item *prev_pli = _prev_item_find(inst);
    if (prev_pli)
      {
         if (prev_pli->is_playable) _media_play_set(inst, prev_pli, EINA_TRUE);
@@ -670,6 +714,27 @@ _media_finished(void *data, const Efl_Event *ev EINA_UNUSED)
    Instance *inst = data;
    _media_play_set(inst, inst->cur_playlist_item, EINA_FALSE);
    _media_next_cb(inst, NULL, NULL);
+}
+
+static void
+_media_blacklist_cb(void *data, Eo *bt, void *event_info EINA_UNUSED)
+{
+   Instance *inst = data;
+   Playlist_Item *pli = inst->selected_pli ? inst->selected_pli : inst->cur_playlist_item;
+   if (!pli) return;
+   pli->is_blocked = !pli->is_blocked;
+   if (pli->is_blocked)
+     {
+        inst->cur_playlist->blacklist = eina_list_append(inst->cur_playlist->blacklist, pli->id);
+        elm_object_part_content_set(bt, "icon", _icon_create(bt, "system-reboot", NULL));
+     }
+   else
+     {
+        inst->cur_playlist->blacklist = eina_list_remove(inst->cur_playlist->blacklist, pli->id);
+        elm_object_part_content_set(bt, "icon", _icon_create(bt, "process-stop", NULL));
+     }
+   _config_save();
+   if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
 }
 
 static void
@@ -721,7 +786,9 @@ _pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EIN
 {
    char buffer[256];
    Playlist_Item *pli = data;
-   if (pli->playing)
+   if (pli->is_blocked)
+      sprintf(buffer, "<i><color=#888>%s</color></i>", pli->title);
+   else if (pli->playing)
       sprintf(buffer, "<b><color=#0FF>%s</color></b>", pli->title);
    else
       sprintf(buffer, pli->title);
@@ -744,6 +811,8 @@ _playlist_item_selected(void *data, Evas_Object *gl EINA_UNUSED, void *event_inf
 {
    Playlist_Item *pli = elm_object_item_data_get(event_info);
    Instance *inst = data;
+   inst->selected_pli = pli;
+   if (pli->is_blocked) pli = _next_item_find(inst, pli);
    if (pli->is_playable) _media_play_set(inst, pli, EINA_TRUE);
    else _pli_download(inst, pli, EINA_TRUE);
 }
@@ -936,6 +1005,11 @@ _box_update(Instance *inst, Eina_Bool clear)
         elm_box_pack_end(ply_bts_box, o);
         /* Random checkbox */
         o = _check_create(ply_bts_box, _config->random, NULL, _random_state_changed, inst);
+        elm_box_pack_end(ply_bts_box, o);
+
+        o = _button_create(ply_bts_box, NULL,
+              _icon_create(ply_bts_box, "process-stop", NULL),
+              NULL, _media_blacklist_cb, inst);
         elm_box_pack_end(ply_bts_box, o);
 
         _media_length_update(inst, NULL);
