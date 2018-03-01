@@ -404,7 +404,7 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
              if (pli->is_playable)
                {
                   elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
-                  elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
+                  elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_MIDDLE);
                   elm_genlist_item_update(pli->gl_item);
                   if (pli->thumbnail_path)
                      elm_image_file_set(inst->pl_img, pli->thumbnail_path, NULL);
