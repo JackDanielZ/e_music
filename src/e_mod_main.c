@@ -15,9 +15,12 @@
 #define _EET_ENTRY "config"
 
 typedef struct _Platform Platform;
+typedef struct _Instance Instance;
 
 typedef struct
 {
+   Instance *inst;
+
    Eina_Stringshare *id;
    Eina_Stringshare *thumbnail_path;
    Eina_Stringshare *title;
@@ -68,7 +71,7 @@ typedef struct
    unsigned int len;
 } Download_Buffer;
 
-typedef struct
+struct _Instance
 {
 #ifndef STAND_ALONE
    E_Gadcon_Client *gcc;
@@ -80,11 +83,12 @@ typedef struct
    Eo *play_bt, *play_song_lb;
    Eo *next_bt, *prev_bt, *stop_bt;
 
+   Ecore_Idle_Exiter *select_job;
+
    Playlist *cur_playlist;
    Playlist_Item *cur_playlist_item;
-   Playlist_Item *selected_pli;
    Playlist_Item *item_to_play;
-} Instance;
+};
 
 #ifndef STAND_ALONE
 static E_Module *_module = NULL;
@@ -230,6 +234,25 @@ _button_create(Eo *parent, const char *text, Eo *icon, Eo **wref, Evas_Smart_Cb 
    elm_object_text_set(bt, text);
    elm_object_part_content_set(bt, "icon", icon);
    return bt;
+}
+
+static Eo *
+_hoversel_create(Eo *parent, const char *text, Eo *icon, Eo **wref, Evas_Smart_Cb cb_func, void *cb_data)
+{
+   Eo *ret = wref ? *wref : NULL;
+   if (!ret)
+     {
+        ret = elm_hoversel_add(parent);
+        elm_hoversel_hover_parent_set(ret, parent);
+        evas_object_size_hint_align_set(ret, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        evas_object_size_hint_weight_set(ret, 0.0, 0.0);
+        evas_object_show(ret);
+        if (wref) efl_wref_add(ret, wref);
+        if (cb_func) evas_object_smart_callback_add(ret, "clicked", cb_func, cb_data);
+     }
+   elm_object_text_set(ret, text);
+   elm_object_part_content_set(ret, "icon", icon);
+   return ret;
 }
 
 static Eo *
@@ -470,10 +493,14 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         id_str += 15;
         end_str = strchr(id_str, '\"');
         it = calloc(1, sizeof(*it));
+        it->inst = inst;
         it->id = eina_stringshare_add_length(id_str, end_str-id_str);
 
         EINA_LIST_FOREACH(pl->blacklist, itr, blackid)
            if (blackid == it->id) it->is_blocked = EINA_TRUE;
+        if (!it->is_blocked)
+           EINA_LIST_FOREACH(pl->platform->blacklist, itr, blackid)
+              if (blackid == it->id) it->is_blocked = EINA_TRUE;
         str = strstr(begin, "data-thumbnail-url=");
         if (str && str < end)
           {
@@ -709,27 +736,6 @@ _media_finished(void *data, const Efl_Event *ev EINA_UNUSED)
 }
 
 static void
-_media_blacklist_cb(void *data, Eo *bt, void *event_info EINA_UNUSED)
-{
-   Instance *inst = data;
-   Playlist_Item *pli = inst->selected_pli ? inst->selected_pli : inst->cur_playlist_item;
-   if (!pli) return;
-   pli->is_blocked = !pli->is_blocked;
-   if (pli->is_blocked)
-     {
-        inst->cur_playlist->blacklist = eina_list_append(inst->cur_playlist->blacklist, pli->id);
-        elm_object_part_content_set(bt, "icon", _icon_create(bt, "system-reboot", NULL));
-     }
-   else
-     {
-        inst->cur_playlist->blacklist = eina_list_remove(inst->cur_playlist->blacklist, pli->id);
-        elm_object_part_content_set(bt, "icon", _icon_create(bt, "process-stop", NULL));
-     }
-   _config_save();
-   if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
-}
-
-static void
 _loop_state_changed(void *data EINA_UNUSED, Eo *chk, void *event_info EINA_UNUSED)
 {
    _config->loop_all = elm_check_selected_get(chk);
@@ -787,25 +793,91 @@ _pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EIN
    return strdup(buffer);
 }
 
-static Evas_Object *
-_pl_item_icon_get(void *data EINA_UNUSED, Evas_Object *obj, const char *part)
+static void
+_pl_item_options_show(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
    Playlist_Item *pli = data;
-   if (!strcmp(part, "elm.swallow.end")) return NULL;
-   Evas_Object *ic = elm_icon_add(obj);
-   if (pli->thumbnail_path) elm_image_file_set(ic, pli->thumbnail_path, NULL);
-   evas_object_size_hint_aspect_set(ic, EVAS_ASPECT_CONTROL_VERTICAL, 1, 1);
-   return ic;
+   if (pli->inst->select_job) ecore_idle_enterer_del(pli->inst->select_job);
+   pli->inst->select_job = NULL;
 }
 
 static void
-_playlist_item_selected(void *data, Evas_Object *gl EINA_UNUSED, void *event_info)
+_pl_item_ban_from_playlist(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EINA_UNUSED)
+{
+   Playlist_Item *pli = data;
+   Instance *inst = pli->inst;
+   pli->is_blocked = EINA_TRUE;
+   inst->cur_playlist->blacklist = eina_list_append(inst->cur_playlist->blacklist, pli->id);
+   _config_save();
+   if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
+}
+
+static void
+_pl_item_ban_from_all_playlists(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EINA_UNUSED)
+{
+   Playlist_Item *pli = data;
+   Instance *inst = pli->inst;
+   pli->is_blocked = EINA_TRUE;
+   inst->cur_playlist->platform->blacklist = eina_list_append(inst->cur_playlist->platform->blacklist, pli->id);
+   _config_save();
+   if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
+}
+
+static void
+_pl_item_unban_from_all_playlists(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EINA_UNUSED)
+{
+   Playlist_Item *pli = data;
+   Instance *inst = pli->inst;
+   pli->is_blocked = EINA_FALSE;
+   inst->cur_playlist->blacklist = eina_list_remove(inst->cur_playlist->blacklist, pli->id);
+   inst->cur_playlist->platform->blacklist = eina_list_remove(inst->cur_playlist->platform->blacklist, pli->id);
+   _config_save();
+   if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
+}
+
+static Evas_Object *
+_pl_item_content_get(void *data, Evas_Object *gl, const char *part)
+{
+   Playlist_Item *pli = data;
+   Eo *ret = NULL;
+   if (!strcmp(part, "elm.swallow.icon"))
+     {
+        ret = elm_icon_add(gl);
+        if (pli->thumbnail_path) elm_image_file_set(ret, pli->thumbnail_path, NULL);
+        evas_object_size_hint_aspect_set(ret, EVAS_ASPECT_CONTROL_VERTICAL, 1, 1);
+     }
+   else if (!strcmp(part, "elm.swallow.end"))
+     {
+        Eo *hs_it;
+        ret = _hoversel_create(gl, "",
+              _icon_create(gl, "view-list-details", NULL),
+              NULL, _pl_item_options_show, pli);
+        hs_it = elm_hoversel_item_add(ret, "Ban from this playlist", NULL, ELM_ICON_NONE, _pl_item_ban_from_playlist, pli);
+        elm_object_item_disabled_set(hs_it, pli->is_blocked);
+        hs_it = elm_hoversel_item_add(ret, "Ban from all the playlists", NULL, ELM_ICON_NONE, _pl_item_ban_from_all_playlists, pli);
+        elm_object_item_disabled_set(hs_it, pli->is_blocked);
+        hs_it = elm_hoversel_item_add(ret, "Unban", NULL, ELM_ICON_NONE, _pl_item_unban_from_all_playlists, pli);
+        elm_object_item_disabled_set(hs_it, !pli->is_blocked);
+     }
+   return ret;
+}
+
+static Eina_Bool
+_playlist_item_select(void *data)
+{
+   Playlist_Item *pli = data;
+   if (pli->inst->select_job && !pli->is_blocked) _pli_download(pli->inst, pli, EINA_TRUE);
+   pli->inst->select_job = NULL;
+   return ECORE_CALLBACK_CANCEL;
+}
+
+static void
+_playlist_item_selected(void *data EINA_UNUSED, Evas_Object *gl EINA_UNUSED, void *event_info)
 {
    Playlist_Item *pli = elm_object_item_data_get(event_info);
-   Instance *inst = data;
-   inst->selected_pli = pli;
-   if (pli->is_blocked) pli = _next_item_find(inst, pli);
-   _pli_download(inst, pli, EINA_TRUE);
+   elm_genlist_item_selected_set(event_info, EINA_FALSE);
+   if (pli->inst->select_job) ecore_idle_enterer_del(pli->inst->select_job);
+   pli->inst->select_job = ecore_idle_enterer_add(_playlist_item_select, pli);
 }
 
 static void
@@ -859,12 +931,12 @@ _box_update(Instance *inst, Eina_Bool clear)
         evas_object_size_hint_weight_set(playlist_gl, 0.6, EVAS_HINT_EXPAND);
         elm_box_pack_end(playlist_box, playlist_gl);
         evas_object_show(playlist_gl);
-        evas_object_smart_callback_add(playlist_gl, "selected", _playlist_item_selected, inst);
+        evas_object_smart_callback_add(playlist_gl, "selected", _playlist_item_selected, NULL);
 
         Elm_Genlist_Item_Class *_pl_itc = elm_genlist_item_class_new();
         _pl_itc->item_style = "default_style";
         _pl_itc->func.text_get = _pl_item_text_get;
-        _pl_itc->func.content_get = _pl_item_icon_get;
+        _pl_itc->func.content_get = _pl_item_content_get;
 
         EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
           {
@@ -996,11 +1068,6 @@ _box_update(Instance *inst, Eina_Bool clear)
         elm_box_pack_end(ply_bts_box, o);
         /* Random checkbox */
         o = _check_create(ply_bts_box, _config->random, NULL, _random_state_changed, inst);
-        elm_box_pack_end(ply_bts_box, o);
-
-        o = _button_create(ply_bts_box, NULL,
-              _icon_create(ply_bts_box, "process-stop", NULL),
-              NULL, _media_blacklist_cb, inst);
         elm_box_pack_end(ply_bts_box, o);
 
         _media_length_update(inst, NULL);
