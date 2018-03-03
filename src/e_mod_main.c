@@ -237,25 +237,6 @@ _button_create(Eo *parent, const char *text, Eo *icon, Eo **wref, Evas_Smart_Cb 
 }
 
 static Eo *
-_hoversel_create(Eo *parent, const char *text, Eo *icon, Eo **wref, Evas_Smart_Cb cb_func, void *cb_data)
-{
-   Eo *ret = wref ? *wref : NULL;
-   if (!ret)
-     {
-        ret = elm_hoversel_add(parent);
-        elm_hoversel_hover_parent_set(ret, parent);
-        evas_object_size_hint_align_set(ret, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        evas_object_size_hint_weight_set(ret, 0.0, 0.0);
-        evas_object_show(ret);
-        if (wref) efl_wref_add(ret, wref);
-        if (cb_func) evas_object_smart_callback_add(ret, "clicked", cb_func, cb_data);
-     }
-   elm_object_text_set(ret, text);
-   elm_object_part_content_set(ret, "icon", icon);
-   return ret;
-}
-
-static Eo *
 _icon_create(Eo *parent, const char *path, Eo **wref)
 {
    Eo *ic = wref ? *wref : NULL;
@@ -794,14 +775,6 @@ _pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EIN
 }
 
 static void
-_pl_item_options_show(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EINA_UNUSED)
-{
-   Playlist_Item *pli = data;
-   if (pli->inst->select_job) ecore_idle_enterer_del(pli->inst->select_job);
-   pli->inst->select_job = NULL;
-}
-
-static void
 _pl_item_ban_from_playlist(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EINA_UNUSED)
 {
    Playlist_Item *pli = data;
@@ -835,6 +808,39 @@ _pl_item_unban_from_all_playlists(void *data, Evas_Object *obj EINA_UNUSED, void
    if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
 }
 
+static void
+_pl_item_options_show(void *data, Evas_Object *obj, void *event_info EINA_UNUSED)
+{
+   Playlist_Item *pli = data;
+   if (pli->inst->select_job) ecore_idle_enterer_del(pli->inst->select_job);
+   pli->inst->select_job = NULL;
+
+   Eo *hv = elm_hover_add(pli->inst->main_box);
+#ifndef STAND_ALONE
+   evas_object_layer_set(hv, E_LAYER_MENU);
+#endif
+   elm_hover_parent_set(hv, pli->inst->main_box);
+   elm_hover_target_set(hv, obj);
+   efl_gfx_visible_set(hv, EINA_TRUE);
+   Eo *bx = elm_box_add(hv);
+   elm_box_homogeneous_set(bx, EINA_TRUE);
+
+   Eo *bt = _button_create(bx, "Ban from this playlist", NULL, NULL, _pl_item_ban_from_playlist, pli);
+   elm_object_disabled_set(bt, pli->is_blocked);
+   elm_box_pack_end(bx, bt);
+
+   bt = _button_create(bx, "Ban from all the playlists", NULL, NULL, _pl_item_ban_from_all_playlists, pli);
+   elm_object_disabled_set(bt, pli->is_blocked);
+   elm_box_pack_end(bx, bt);
+
+   bt = _button_create(bx, "Unban", NULL, NULL, _pl_item_unban_from_all_playlists, pli);
+   elm_object_disabled_set(bt, !pli->is_blocked);
+   elm_box_pack_end(bx, bt);
+
+   evas_object_show(bx);
+   elm_object_part_content_set(hv, "top", bx);
+}
+
 static Evas_Object *
 _pl_item_content_get(void *data, Evas_Object *gl, const char *part)
 {
@@ -848,16 +854,9 @@ _pl_item_content_get(void *data, Evas_Object *gl, const char *part)
      }
    else if (!strcmp(part, "elm.swallow.end"))
      {
-        Eo *hs_it;
-        ret = _hoversel_create(gl, "",
+        ret = _button_create(pli->inst->main, "",
               _icon_create(gl, "view-list-details", NULL),
               NULL, _pl_item_options_show, pli);
-        hs_it = elm_hoversel_item_add(ret, "Ban from this playlist", NULL, ELM_ICON_NONE, _pl_item_ban_from_playlist, pli);
-        elm_object_item_disabled_set(hs_it, pli->is_blocked);
-        hs_it = elm_hoversel_item_add(ret, "Ban from all the playlists", NULL, ELM_ICON_NONE, _pl_item_ban_from_all_playlists, pli);
-        elm_object_item_disabled_set(hs_it, pli->is_blocked);
-        hs_it = elm_hoversel_item_add(ret, "Unban", NULL, ELM_ICON_NONE, _pl_item_unban_from_all_playlists, pli);
-        elm_object_item_disabled_set(hs_it, !pli->is_blocked);
      }
    return ret;
 }
