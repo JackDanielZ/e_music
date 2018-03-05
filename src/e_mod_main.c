@@ -95,7 +95,7 @@ static E_Module *_module = NULL;
 #endif
 
 static void
-_box_update(Instance *inst, Eina_Bool clear);
+_box_update(Instance *inst);
 static void
 _media_next_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED);
 
@@ -408,6 +408,7 @@ _youtube_download(Instance *inst, Playlist_Item *pli)
          pli->id, pli->download_path);
    pli->download_exe = ecore_exe_pipe_run(cmd, ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_ERROR, pli);
    efl_key_data_set(pli->download_exe, "Instance", inst);
+   efl_key_data_set(pli->download_exe, "Type", "YoutubeDownload");
    efl_wref_add(pli->download_exe, &(pli->download_exe));
 }
 
@@ -445,6 +446,7 @@ _pli_icon_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
 {
    Download_Buffer *buf = efl_key_data_get(event->object, "Download_Buffer");
    Playlist_Item *pli = efl_key_data_get(event->object, "pli");
+   if (!buf->data) return;
    char fpath[256];
    sprintf(fpath, "/tmp/yt-%s.png", pli->id);
    FILE *fp = fopen(fpath, "w");
@@ -457,6 +459,7 @@ _pli_icon_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
 static void
 _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
 {
+   char cmd[100];
    Instance *inst = efl_key_data_get(event->object, "Instance");
    Playlist *pl = efl_key_data_get(event->object, "Playlist");
    Download_Buffer *buf = efl_key_data_get(event->object, "Download_Buffer");
@@ -473,6 +476,7 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         while (*begin != '\n') begin--;
         id_str += 15;
         end_str = strchr(id_str, '\"');
+
         it = calloc(1, sizeof(*it));
         it->inst = inst;
         it->id = eina_stringshare_add_length(id_str, end_str-id_str);
@@ -505,8 +509,86 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
         pl->items = eina_list_append(pl->items, it);
         id_str = strstr(end, "data-video-id=");
      }
+
+   sprintf(cmd, "youtube-dl -j --flat-playlist \"%s\"", pl->list_id);
+   Ecore_Exe *exe = ecore_exe_pipe_run(cmd, ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_ERROR, pl);
+   efl_key_data_set(exe, "Instance", inst);
+   efl_key_data_set(exe, "Type", "YoutubeGetFullPlaylist");
+   efl_key_data_set(exe, "Download_Buffer", calloc(1, sizeof(Download_Buffer)));
+
    _media_next_cb(inst, NULL, NULL);
-   _box_update(inst, EINA_TRUE);
+   _box_update(inst);
+}
+
+static int
+_ascii_to_digit(char c)
+{
+   if (c >= '0' && c <= '9') return c - '0';
+   if (c >= 'a' && c <= 'f') return c - 'a' + 0xA;
+   if (c >= 'A' && c <= 'F') return c - 'A' + 0xA;
+   return 0;
+}
+
+static void
+_playlist_item_json_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
+{
+   Playlist_Item *pli = efl_key_data_get(event->object, "Playlist_Item");
+   Download_Buffer *buf = efl_key_data_get(event->object, "Download_Buffer");
+   if (!buf->data) return;
+   char *str = strstr(buf->data, "thumbnail_url\":\""), *end_str;
+   if (str)
+     {
+        Eina_Strbuf *sbuf = eina_strbuf_new();
+        str += 16;
+        end_str = strchr(str, '\"');
+        *end_str = '\0';
+        eina_strbuf_append(sbuf, str);
+        *end_str = '\"';
+        eina_strbuf_replace_all(sbuf, "\\/", "/");
+        Efl_Net_Dialer_Http *dialer = _dialer_create(EINA_TRUE, NULL, _pli_icon_downloaded);
+        efl_key_data_set(dialer, "pli", pli);
+        efl_net_dialer_dial(dialer, eina_strbuf_string_get(sbuf));
+        eina_strbuf_free(sbuf);
+     }
+   str = strstr(buf->data, "title\":\"");
+   if (str)
+     {
+        str += 8;
+        end_str = strchr(str, '\"');
+        *end_str = '\0';
+        if (strstr(str, "\\u"))
+          {
+             int i = 0;
+             char title[4096];
+             while (*str)
+               {
+                  if (*str == '\\' && *(str + 1) == 'u')
+                    {
+                       int len = 0;
+                       str += 2;
+                       Eina_Unicode uni[2];
+                       uni[0] = (_ascii_to_digit(str[0]) << 12) | (_ascii_to_digit(str[1]) << 8) |
+                             (_ascii_to_digit(str[2]) << 4) | _ascii_to_digit(str[3]);
+                       uni[1] = 0;
+                       char *utf = eina_unicode_unicode_to_utf8(uni, &len);
+                       memcpy(title + i, utf, len);
+                       str += 4;
+                       i += len;
+                    }
+                  else
+                    {
+                       title[i++] = *str;
+                       str++;
+                    }
+               }
+             title[i] = '\0';
+             pli->title = eina_stringshare_add(title);
+          }
+        else
+           pli->title = eina_stringshare_add(str);
+        *end_str = '\"';
+     }
+   if (pli->gl_item) elm_genlist_item_update(pli->gl_item);
 }
 
 static void
@@ -534,23 +616,38 @@ _exe_error_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event EINA_UNU
 }
 
 static Eina_Bool
-_exe_output_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event)
+_exe_output_cb(void *data EINA_UNUSED, int _type EINA_UNUSED, void *event)
 {
    Ecore_Exe_Event_Data *event_data = (Ecore_Exe_Event_Data *)event;
    const char *buf = event_data->data;
+   unsigned int size = event_data->size;
    Ecore_Exe *exe = event_data->exe;
    Instance *inst = efl_key_data_get(exe, "Instance");
-   Playlist_Item *pli = ecore_exe_data_get(exe);
-   if (!pli || pli->download_exe != exe) return ECORE_CALLBACK_PASS_ON;
-
-   while (!pli->is_playable && (buf = strstr(buf, "[download] ")))
+   const char *type = efl_key_data_get(exe, "Type");
+   if (!strcmp(type, "YoutubeDownload"))
      {
-        buf += 11;
-        float percent = strtod(buf, NULL);
-        if (percent)
+        Playlist_Item *pli = ecore_exe_data_get(exe);
+        while (!pli->is_playable && (buf = strstr(buf, "[download] ")))
           {
-             pli->is_playable = EINA_TRUE;
-             if (pli == inst->item_to_play) _media_play_set(inst, pli, EINA_TRUE);
+             buf += 11;
+             float percent = strtod(buf, NULL);
+             if (percent)
+               {
+                  pli->is_playable = EINA_TRUE;
+                  if (pli == inst->item_to_play) _media_play_set(inst, pli, EINA_TRUE);
+               }
+          }
+     }
+   else if (!strcmp(type, "YoutubeGetFullPlaylist"))
+     {
+        Download_Buffer *dbuf = efl_key_data_get(exe, "Download_Buffer");
+        if (size > (dbuf->max_len - dbuf->len))
+          {
+             dbuf->max_len = dbuf->len + size;
+             dbuf->data = realloc(dbuf->data, dbuf->max_len + 1);
+             memcpy(dbuf->data+dbuf->len, buf, size);
+             dbuf->len += size;
+             dbuf->data[dbuf->max_len] = '\0';
           }
      }
 
@@ -558,15 +655,62 @@ _exe_output_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event)
 }
 
 static Eina_Bool
-_exe_end_cb(void *data EINA_UNUSED, int type EINA_UNUSED, void *event)
+_exe_end_cb(void *data EINA_UNUSED, int _type EINA_UNUSED, void *event)
 {
    Ecore_Exe_Event_Del *event_info = (Ecore_Exe_Event_Del *)event;
    Ecore_Exe *exe = event_info->exe;
    Instance *inst = efl_key_data_get(exe, "Instance");
-   Playlist_Item *pli = ecore_exe_data_get(exe);
-   if (!pli || pli->download_exe != exe) return ECORE_CALLBACK_PASS_ON;
-   pli->is_playable = EINA_TRUE;
-   if (pli == inst->item_to_play) _media_play_set(inst, pli, EINA_TRUE);
+   const char *type = efl_key_data_get(exe, "Type");
+   if (!type) return ECORE_CALLBACK_PASS_ON;
+   if (event_info->exit_code) return ECORE_CALLBACK_DONE;
+   if (!strcmp(type, "YoutubeDownload"))
+     {
+        Playlist_Item *pli = ecore_exe_data_get(exe);
+        pli->is_playable = EINA_TRUE;
+        if (pli == inst->item_to_play) _media_play_set(inst, pli, EINA_TRUE);
+     }
+   else if (!strcmp(type, "YoutubeGetFullPlaylist"))
+     {
+        Playlist *pl = ecore_exe_data_get(exe);
+        Download_Buffer *dbuf = efl_key_data_get(exe, "Download_Buffer");
+        char *id_str = strstr(dbuf->data, "\"id\": \"");
+        Eina_List *old_items = pl->items;
+        pl->items = NULL;
+        while (id_str)
+          {
+             Eina_List *itr;
+             Playlist_Item *pli, *found_old = NULL;
+             id_str += 7;
+             char *end_str = strchr(id_str, '\"');
+             Eina_Stringshare *id = eina_stringshare_add_length(id_str, end_str-id_str);
+             EINA_LIST_FOREACH(old_items, itr, pli)
+               {
+                  if (!found_old && pli->id == id) found_old = pli;
+               }
+             if (found_old)
+               {
+                  pli = found_old;
+                  elm_object_item_del(pli->gl_item);
+               }
+             else
+               {
+                  char request[256];
+                  pli = calloc(1, sizeof(*pli));
+                  pli->id = id;
+                  pli->inst = inst;
+                  sprintf(request,
+                        "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=%s&format=json",
+                        id);
+                  Efl_Net_Dialer_Http *dialer = _dialer_create(EINA_TRUE, NULL, _playlist_item_json_downloaded);
+                  efl_key_data_set(dialer, "Instance", inst);
+                  efl_key_data_set(dialer, "Playlist_Item", pli);
+                  efl_net_dialer_dial(dialer, request);
+               }
+             pl->items = eina_list_append(pl->items, pli);
+             id_str = strstr(id_str, "\"id\": \"");
+          }
+        _box_update(inst);
+     }
    return ECORE_CALLBACK_DONE;
 }
 
@@ -628,7 +772,7 @@ _media_stop_cb(void *data, Eo *obj EINA_UNUSED, void *event_info EINA_UNUSED)
    _media_play_set(inst, NULL, EINA_FALSE);
    efl_del(inst->ply_emo);
    inst->cur_playlist = NULL;
-   _box_update(inst, EINA_TRUE);
+   _box_update(inst);
 }
 
 static Playlist_Item *
@@ -763,9 +907,11 @@ _sl_changed(void *data, const Efl_Event *ev EINA_UNUSED)
 static char *
 _pl_item_text_get(void *data, Evas_Object *obj EINA_UNUSED, const char *part EINA_UNUSED)
 {
-   char buffer[256];
+   char buffer[4096];
    Playlist_Item *pli = data;
-   if (pli->is_blocked)
+   if (!pli->title)
+      sprintf(buffer, "Unknown");
+   else if (pli->is_blocked)
       sprintf(buffer, "<i><color=#888>%s</color></i>", pli->title);
    else if (pli->playing)
       sprintf(buffer, "<b><color=#0FF>%s</color></b>", pli->title);
@@ -880,19 +1026,21 @@ _playlist_item_selected(void *data EINA_UNUSED, Evas_Object *gl EINA_UNUSED, voi
 }
 
 static void
-_box_update(Instance *inst, Eina_Bool clear)
+_box_update(Instance *inst)
 {
+   static Playlist *cur_pl = NULL;
    Eina_List *itr;
    Playlist *pl;
 
    if (!inst->main_box) return;
 
-   if (clear)
+   if (cur_pl != inst->cur_playlist)
      {
         elm_box_clear(inst->main_box);
      }
+   cur_pl = inst->cur_playlist;
 
-   if (!inst->cur_playlist)
+   if (!cur_pl)
      {
         Platform *p = eina_list_data_get(_config->platforms);
         EINA_LIST_FOREACH(p->lists, itr, pl)
@@ -915,42 +1063,61 @@ _box_update(Instance *inst, Eina_Bool clear)
      }
    else
      {
+        static Elm_Genlist_Item_Class *_pl_itc = NULL;
+        static Eo *playlist_box = NULL, *playlist_gl = NULL;
+        static Eo *ply_box = NULL, *ply_sl_box = NULL, *ply_bts_box = NULL;
         Playlist_Item *pli;
+        Eina_Bool bts_create = EINA_FALSE;
 
-        Eo *playlist_box = elm_box_add(inst->main_box);
-        elm_box_horizontal_set(playlist_box, EINA_TRUE);
-        evas_object_size_hint_weight_set(playlist_box, EVAS_HINT_EXPAND, 0.9);
-        evas_object_size_hint_align_set(playlist_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        efl_gfx_size_hint_min_set(inst->main_box, EINA_SIZE2D(800, 400));
-        elm_box_pack_end(inst->main_box, playlist_box);
-        evas_object_show(playlist_box);
+        if (!playlist_box)
+          {
+             playlist_box = elm_box_add(inst->main_box);
+             elm_box_horizontal_set(playlist_box, EINA_TRUE);
+             evas_object_size_hint_weight_set(playlist_box, EVAS_HINT_EXPAND, 0.9);
+             evas_object_size_hint_align_set(playlist_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             efl_gfx_size_hint_min_set(inst->main_box, EINA_SIZE2D(800, 400));
+             elm_box_pack_end(inst->main_box, playlist_box);
+             evas_object_show(playlist_box);
+             efl_wref_add(playlist_box, &playlist_box);
+          }
 
-        Eo *playlist_gl = elm_genlist_add(playlist_box);
-        evas_object_size_hint_align_set(playlist_gl, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        evas_object_size_hint_weight_set(playlist_gl, 0.6, EVAS_HINT_EXPAND);
-        elm_box_pack_end(playlist_box, playlist_gl);
-        evas_object_show(playlist_gl);
-        evas_object_smart_callback_add(playlist_gl, "selected", _playlist_item_selected, NULL);
+        if (!playlist_gl)
+          {
+             playlist_gl = elm_genlist_add(playlist_box);
+             evas_object_size_hint_align_set(playlist_gl, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             evas_object_size_hint_weight_set(playlist_gl, 0.6, EVAS_HINT_EXPAND);
+             elm_box_pack_end(playlist_box, playlist_gl);
+             evas_object_show(playlist_gl);
+             evas_object_smart_callback_add(playlist_gl, "selected", _playlist_item_selected, NULL);
+             efl_wref_add(playlist_gl, &playlist_gl);
+          }
 
-        Elm_Genlist_Item_Class *_pl_itc = elm_genlist_item_class_new();
-        _pl_itc->item_style = "default_style";
-        _pl_itc->func.text_get = _pl_item_text_get;
-        _pl_itc->func.content_get = _pl_item_content_get;
+        if (!_pl_itc)
+          {
+             _pl_itc = elm_genlist_item_class_new();
+             _pl_itc->item_style = "default_style";
+             _pl_itc->func.text_get = _pl_item_text_get;
+             _pl_itc->func.content_get = _pl_item_content_get;
+          }
 
         EINA_LIST_FOREACH(inst->cur_playlist->items, itr, pli)
           {
+             if (pli->gl_item) continue;
              pli->gl_item = elm_genlist_item_append(playlist_gl, _pl_itc, pli,
                    NULL, ELM_GENLIST_ITEM_NONE, NULL, NULL);
              efl_wref_add(pli->gl_item, &(pli->gl_item));
              if (pli->playing) elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_TOP);
           }
 
-        inst->pl_img = elm_image_add(playlist_box);
-        evas_object_size_hint_weight_set(inst->pl_img, 0.4, EVAS_HINT_EXPAND);
-        evas_object_size_hint_align_set(inst->pl_img, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        elm_box_pack_end(playlist_box, inst->pl_img);
-        efl_wref_add(inst->pl_img, &inst->pl_img);
-        evas_object_show(inst->pl_img);
+        if (!inst->pl_img)
+          {
+             inst->pl_img = elm_image_add(playlist_box);
+             evas_object_size_hint_weight_set(inst->pl_img, 0.4, EVAS_HINT_EXPAND);
+             evas_object_size_hint_align_set(inst->pl_img, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             elm_box_pack_end(playlist_box, inst->pl_img);
+             efl_wref_add(inst->pl_img, &inst->pl_img);
+             evas_object_show(inst->pl_img);
+          }
 
         if (!inst->ply_emo)
           {
@@ -966,108 +1133,148 @@ _box_update(Instance *inst, Eina_Bool clear)
           }
 
         /* Player vertical box */
-        Eo *ply_box = elm_box_add(inst->main_box);
-        evas_object_size_hint_weight_set(ply_box, EVAS_HINT_EXPAND, 0.1);
-        evas_object_size_hint_align_set(ply_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        elm_box_pack_end(inst->main_box, ply_box);
-        evas_object_show(ply_box);
+        if (!ply_box)
+          {
+             ply_box = elm_box_add(inst->main_box);
+             evas_object_size_hint_weight_set(ply_box, EVAS_HINT_EXPAND, 0.1);
+             evas_object_size_hint_align_set(ply_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             elm_box_pack_end(inst->main_box, ply_box);
+             evas_object_show(ply_box);
+             efl_wref_add(ply_box, &ply_box);
+          }
 
         /* Player slider horizontal box */
-        Eo *ply_sl_box = elm_box_add(ply_box);
-        evas_object_size_hint_weight_set(ply_sl_box, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
-        evas_object_size_hint_align_set(ply_sl_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        elm_box_horizontal_set(ply_sl_box, EINA_TRUE);
-        elm_box_pack_end(ply_box, ply_sl_box);
-        evas_object_show(ply_sl_box);
+        if (!ply_sl_box)
+          {
+             ply_sl_box = elm_box_add(ply_box);
+             evas_object_size_hint_weight_set(ply_sl_box, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
+             evas_object_size_hint_align_set(ply_sl_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             elm_box_horizontal_set(ply_sl_box, EINA_TRUE);
+             elm_box_pack_end(ply_box, ply_sl_box);
+             evas_object_show(ply_sl_box);
+             efl_wref_add(ply_sl_box, &ply_sl_box);
+          }
 
         /* Label showing music progress */
-        inst->play_prg_lb = elm_label_add(ply_sl_box);
-        evas_object_size_hint_align_set(inst->play_prg_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        evas_object_size_hint_weight_set(inst->play_prg_lb, 0.1, EVAS_HINT_EXPAND);
-        elm_box_pack_end(ply_sl_box, inst->play_prg_lb);
-        efl_weak_ref(&inst->play_prg_lb);
-        evas_object_show(inst->play_prg_lb);
+        if (!inst->play_prg_lb)
+          {
+             inst->play_prg_lb = elm_label_add(ply_sl_box);
+             evas_object_size_hint_align_set(inst->play_prg_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             evas_object_size_hint_weight_set(inst->play_prg_lb, 0.1, EVAS_HINT_EXPAND);
+             elm_box_pack_end(ply_sl_box, inst->play_prg_lb);
+             efl_weak_ref(&inst->play_prg_lb);
+             evas_object_show(inst->play_prg_lb);
+          }
 
         /* Slider showing music progress */
-        inst->play_prg_sl = elm_slider_add(ply_sl_box);
-        elm_slider_indicator_format_function_set(inst->play_prg_sl, _sl_format, _sl_label_free);
-        elm_slider_span_size_set(inst->play_prg_sl, 120);
-        efl_event_callback_add(inst->play_prg_sl, EFL_UI_SLIDER_EVENT_CHANGED, _sl_changed, inst);
-        evas_object_size_hint_align_set(inst->play_prg_sl, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        evas_object_size_hint_weight_set(inst->play_prg_sl, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
-        elm_box_pack_end(ply_sl_box, inst->play_prg_sl);
-        efl_weak_ref(&inst->play_prg_sl);
-        evas_object_show(inst->play_prg_sl);
+        if (!inst->play_prg_sl)
+          {
+             inst->play_prg_sl = elm_slider_add(ply_sl_box);
+             elm_slider_indicator_format_function_set(inst->play_prg_sl, _sl_format, _sl_label_free);
+             elm_slider_span_size_set(inst->play_prg_sl, 120);
+             efl_event_callback_add(inst->play_prg_sl, EFL_UI_SLIDER_EVENT_CHANGED, _sl_changed, inst);
+             evas_object_size_hint_align_set(inst->play_prg_sl, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             evas_object_size_hint_weight_set(inst->play_prg_sl, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
+             elm_box_pack_end(ply_sl_box, inst->play_prg_sl);
+             efl_weak_ref(&inst->play_prg_sl);
+             evas_object_show(inst->play_prg_sl);
+          }
 
         /* Label showing total music time */
-        inst->play_total_lb = elm_label_add(ply_sl_box);
-        evas_object_size_hint_align_set(inst->play_total_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        evas_object_size_hint_weight_set(inst->play_total_lb, 0.1, EVAS_HINT_EXPAND);
-        elm_box_pack_end(ply_sl_box, inst->play_total_lb);
-        efl_weak_ref(&inst->play_total_lb);
-        evas_object_show(inst->play_total_lb);
+        if (!inst->play_total_lb)
+          {
+             inst->play_total_lb = elm_label_add(ply_sl_box);
+             evas_object_size_hint_align_set(inst->play_total_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             evas_object_size_hint_weight_set(inst->play_total_lb, 0.1, EVAS_HINT_EXPAND);
+             elm_box_pack_end(ply_sl_box, inst->play_total_lb);
+             efl_weak_ref(&inst->play_total_lb);
+             evas_object_show(inst->play_total_lb);
+          }
 
         /* Player song name */
-        inst->play_song_lb = elm_label_add(ply_box);
-        evas_object_size_hint_align_set(inst->play_song_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        evas_object_size_hint_weight_set(inst->play_song_lb, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
-        elm_box_pack_end(ply_box, inst->play_song_lb);
-        efl_weak_ref(&inst->play_song_lb);
-        evas_object_show(inst->play_song_lb);
+        if (!inst->play_song_lb)
+          {
+             inst->play_song_lb = elm_label_add(ply_box);
+             evas_object_size_hint_align_set(inst->play_song_lb, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             evas_object_size_hint_weight_set(inst->play_song_lb, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
+             elm_box_pack_end(ply_box, inst->play_song_lb);
+             efl_weak_ref(&inst->play_song_lb);
+             evas_object_show(inst->play_song_lb);
+          }
 
         /* Player buttons box */
-        Eo *ply_bts_box = elm_box_add(ply_box);
-        evas_object_size_hint_weight_set(ply_bts_box, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
-        evas_object_size_hint_align_set(ply_bts_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
-        elm_box_horizontal_set(ply_bts_box, EINA_TRUE);
-        elm_box_pack_end(ply_box, ply_bts_box);
-        evas_object_show(ply_bts_box);
+        if (!ply_bts_box)
+          {
+             bts_create = EINA_TRUE;
+             ply_bts_box = elm_box_add(ply_box);
+             evas_object_size_hint_weight_set(ply_bts_box, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
+             evas_object_size_hint_align_set(ply_bts_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
+             elm_box_horizontal_set(ply_bts_box, EINA_TRUE);
+             elm_box_pack_end(ply_box, ply_bts_box);
+             evas_object_show(ply_bts_box);
+             efl_wref_add(ply_bts_box, &ply_bts_box);
+          }
 
         /* Prev button */
-        inst->prev_bt = _button_create(ply_bts_box, NULL,
-              _icon_create(ply_bts_box,
-                 "media-seek-backward", NULL),
-              NULL, _media_prev_cb, inst);
-        elm_box_pack_end(ply_bts_box, inst->prev_bt);
-        efl_weak_ref(&inst->prev_bt);
+        if (!inst->prev_bt)
+          {
+             inst->prev_bt = _button_create(ply_bts_box, NULL,
+                   _icon_create(ply_bts_box,
+                      "media-seek-backward", NULL),
+                   NULL, _media_prev_cb, inst);
+             elm_box_pack_end(ply_bts_box, inst->prev_bt);
+             efl_weak_ref(&inst->prev_bt);
+          }
 
         /* Play/pause button */
-        inst->play_bt = _button_create(ply_bts_box, NULL,
-              _icon_create(ply_bts_box,
-                 inst->cur_playlist_item && inst->cur_playlist_item->playing ?
-                 "media-playback-pause" : "media-playback-start", NULL),
-              NULL, _media_play_pause_cb, inst);
-        elm_box_pack_end(ply_bts_box, inst->play_bt);
-        efl_weak_ref(&inst->play_bt);
+        if (!inst->play_bt)
+          {
+             inst->play_bt = _button_create(ply_bts_box, NULL,
+                   _icon_create(ply_bts_box,
+                      inst->cur_playlist_item && inst->cur_playlist_item->playing ?
+                      "media-playback-pause" : "media-playback-start", NULL),
+                   NULL, _media_play_pause_cb, inst);
+             elm_box_pack_end(ply_bts_box, inst->play_bt);
+             efl_weak_ref(&inst->play_bt);
+          }
 
         /* Stop button */
-        inst->stop_bt = _button_create(ply_bts_box, NULL,
-              _icon_create(ply_bts_box, "media-playback-stop", NULL),
-              NULL, _media_stop_cb, inst);
-        elm_box_pack_end(ply_bts_box, inst->stop_bt);
-        efl_weak_ref(&inst->stop_bt);
+        if (!inst->stop_bt)
+          {
+             inst->stop_bt = _button_create(ply_bts_box, NULL,
+                   _icon_create(ply_bts_box, "media-playback-stop", NULL),
+                   NULL, _media_stop_cb, inst);
+             elm_box_pack_end(ply_bts_box, inst->stop_bt);
+             efl_weak_ref(&inst->stop_bt);
+          }
 
         /* Next button */
-        inst->next_bt = _button_create(ply_bts_box, NULL,
-              _icon_create(ply_bts_box,
-                 "media-seek-forward", NULL),
-              NULL, _media_next_cb, inst);
-        elm_box_pack_end(ply_bts_box, inst->next_bt);
-        efl_weak_ref(&inst->next_bt);
+        if (!inst->next_bt)
+          {
+             inst->next_bt = _button_create(ply_bts_box, NULL,
+                   _icon_create(ply_bts_box,
+                      "media-seek-forward", NULL),
+                   NULL, _media_next_cb, inst);
+             elm_box_pack_end(ply_bts_box, inst->next_bt);
+             efl_weak_ref(&inst->next_bt);
+          }
 
-        /* Loop label */
-        Eo *o = _label_create(ply_bts_box, "   Loop ", NULL);
-        elm_box_pack_end(ply_bts_box, o);
-        /* Loop checkbox */
-        o = _check_create(ply_bts_box, _config->loop_all, NULL, _loop_state_changed, NULL);
-        elm_box_pack_end(ply_bts_box, o);
+        if (bts_create)
+          {
+             /* Loop label */
+             Eo *o = _label_create(ply_bts_box, "   Loop ", NULL);
+             elm_box_pack_end(ply_bts_box, o);
+             /* Loop checkbox */
+             o = _check_create(ply_bts_box, _config->loop_all, NULL, _loop_state_changed, NULL);
+             elm_box_pack_end(ply_bts_box, o);
 
-        /* Random label */
-        o = _label_create(ply_bts_box, "   Random ", NULL);
-        elm_box_pack_end(ply_bts_box, o);
-        /* Random checkbox */
-        o = _check_create(ply_bts_box, _config->random, NULL, _random_state_changed, inst);
-        elm_box_pack_end(ply_bts_box, o);
+             /* Random label */
+             o = _label_create(ply_bts_box, "   Random ", NULL);
+             elm_box_pack_end(ply_bts_box, o);
+             /* Random checkbox */
+             o = _check_create(ply_bts_box, _config->random, NULL, _random_state_changed, inst);
+             elm_box_pack_end(ply_bts_box, o);
+          }
 
         _media_length_update(inst, NULL);
         _media_position_update(inst, NULL);
@@ -1139,7 +1346,7 @@ _button_cb_mouse_down(void *data, Evas *e EINA_UNUSED, Evas_Object *obj EINA_UNU
              evas_object_show(o);
              efl_wref_add(o, &inst->main_box);
 
-             _box_update(inst, EINA_FALSE);
+             _box_update(inst);
 
              e_gadcon_popup_content_set(inst->popup, inst->main_box);
              e_comp_object_util_autoclose(inst->popup->comp_object,
@@ -1322,7 +1529,7 @@ int main(int argc, char **argv)
 
    srand(time(NULL));
 
-   _box_update(inst, EINA_FALSE);
+   _box_update(inst);
 
    elm_run();
 
