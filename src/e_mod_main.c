@@ -79,6 +79,7 @@ struct _Instance
 #endif
    Evas_Object *o_icon;
    Eo *main, *main_box, *pl_img;
+   Eo *playlist_link_entry;
    Eo *ply_emo, *play_total_lb, *play_prg_lb, *play_prg_sl;
    Eo *play_bt, *play_song_lb;
    Eo *next_bt, *prev_bt, *stop_bt;
@@ -168,16 +169,6 @@ _config_load()
    if (!file)
      {
         _config = calloc(1, sizeof(Config));
-        /* TEMP */
-        p = calloc(1, sizeof(*p));
-        p->type = strdup("youtube");
-        pl = calloc(1, sizeof(*pl));
-        pl->platform = p;
-        pl->desc = strdup("Toto");
-        pl->list_id = strdup("RDEMBacXKC3mWU4Pzru44ZwIdg");
-        pl->first_id = strdup("izTMmZ9WYlE");
-        p->lists = eina_list_append(p->lists, pl);
-        _config->platforms = eina_list_append(_config->platforms, p);
      }
    else
      {
@@ -263,6 +254,22 @@ _check_create(Eo *parent, Eina_Bool enable, Eo **wref, Evas_Smart_Cb cb_func, vo
         evas_object_show(o);
         if (wref) efl_wref_add(o, wref);
         if (cb_func) evas_object_smart_callback_add(o, "changed", cb_func, cb_data);
+     }
+   return o;
+}
+
+static Eo *
+_entry_create(Eo *parent, const char *text, Eo **wref)
+{
+   Eo *o = wref ? *wref : NULL;
+   if (!o)
+     {
+        o = elm_entry_add(parent);
+        evas_object_size_hint_align_set(o, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        evas_object_size_hint_weight_set(o, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
+        evas_object_show(o);
+        elm_object_text_set(o, text);
+        if (wref) efl_wref_add(o, wref);
      }
    return o;
 }
@@ -508,6 +515,18 @@ _playlist_html_downloaded(void *data EINA_UNUSED, const Efl_Event *event)
           }
         pl->items = eina_list_append(pl->items, it);
         id_str = strstr(end, "data-video-id=");
+     }
+
+   if (!pl->desc)
+     {
+        char *desc_str = strstr(buf->data, "data-list-title=");
+        if (desc_str)
+          {
+             desc_str += 17;
+             char *end_str = strchr(desc_str, '\"');
+             pl->desc = strndup(desc_str, end_str - desc_str);
+             _config_save();
+          }
      }
 
    sprintf(cmd, "youtube-dl -j --flat-playlist \"%s\"", pl->list_id);
@@ -1025,6 +1044,80 @@ _playlist_item_selected(void *data EINA_UNUSED, Evas_Object *gl EINA_UNUSED, voi
    pli->inst->select_job = ecore_idle_enterer_add(_playlist_item_select, pli);
 }
 
+static Eina_Bool
+_playlist_link_selection_get(void *data EINA_UNUSED,
+                   Evas_Object *en,
+                   Elm_Selection_Data *sel_data)
+{
+   if (!sel_data->len) return EINA_FALSE;
+   char *buf = alloca(sel_data->len + 256);
+   sprintf(buf, "<i><color=#888>%s</color></i>", (char *)sel_data->data);
+   elm_object_text_set(en, buf);
+   buf = efl_key_data_get(en, "pasted_data");
+   if (buf) free(buf);
+   efl_key_data_set(en, "pasted_data", strdup(sel_data->data));
+   return EINA_TRUE;
+}
+
+static Eina_Bool
+_playlist_link_selection_poll_cb(void *data)
+{
+   Instance *inst = data;
+   if (!inst->playlist_link_entry) return EINA_FALSE;
+   elm_cnp_selection_get
+      (inst->playlist_link_entry, ELM_SEL_TYPE_CLIPBOARD, ELM_SEL_FORMAT_TEXT,
+       _playlist_link_selection_get, NULL);
+   return EINA_TRUE;
+}
+
+static void
+_playlist_link_add(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EINA_UNUSED)
+{
+   Instance *inst = data;
+   char *text = efl_key_data_get(inst->playlist_link_entry, "pasted_data");
+   if (strstr(text, "youtube"))
+     {
+        Eina_List *itr;
+        Platform *p;
+        Eina_Bool p_found = EINA_FALSE;
+        char *first_id = strstr(text, "v="), *end;
+        if (!first_id) return;
+        first_id += 2;
+        char *list_id = strstr(text, "list=");
+        if (!list_id) return;
+        list_id += 5;
+
+        Playlist *pl = calloc(1, sizeof(*pl));
+        end = first_id;
+        while (*end && *end != '&') end++;
+        pl->first_id = strndup(first_id, end - first_id);
+
+        end = list_id;
+        while (*end && *end != '&') end++;
+        pl->list_id = strndup(list_id, end - list_id);
+
+        EINA_LIST_FOREACH(_config->platforms, itr, p)
+          {
+             if (!p_found && !strcmp(p->type, "youtube"))
+               {
+                  p->lists = eina_list_append(p->lists, pl);
+                  pl->platform = p;
+                  p_found = EINA_TRUE;
+               }
+          }
+        if (!p_found)
+          {
+             p = calloc(1, sizeof(*p));
+             p->lists = eina_list_append(p->lists, pl);
+             pl->platform = p;
+             _config->platforms = eina_list_append(_config->platforms, p);
+          }
+        _config_save();
+        _box_update(inst);
+     }
+   printf("Text %s\n", text);
+}
+
 static void
 _box_update(Instance *inst)
 {
@@ -1034,7 +1127,7 @@ _box_update(Instance *inst)
 
    if (!inst->main_box) return;
 
-   if (cur_pl != inst->cur_playlist)
+   if (!cur_pl || cur_pl != inst->cur_playlist)
      {
         elm_box_clear(inst->main_box);
      }
@@ -1042,24 +1135,36 @@ _box_update(Instance *inst)
 
    if (!cur_pl)
      {
+        Eo *o;
+        int row = 0;
         Platform *p = eina_list_data_get(_config->platforms);
+
+        Eo *tb = elm_table_add(inst->main_box);
+        evas_object_size_hint_align_set(tb, EVAS_HINT_FILL, EVAS_HINT_FILL);
+        evas_object_size_hint_weight_set(tb, EVAS_HINT_EXPAND, 0.0);
+        evas_object_show(tb);
+        elm_box_pack_end(inst->main_box, tb);
         EINA_LIST_FOREACH(p->lists, itr, pl)
           {
-             Eo *b = elm_box_add(inst->main_box);
-             elm_box_horizontal_set(b, EINA_TRUE);
-             evas_object_size_hint_align_set(b, EVAS_HINT_FILL, EVAS_HINT_FILL);
-             evas_object_size_hint_weight_set(b, EVAS_HINT_EXPAND, 0.0);
-             evas_object_show(b);
-             elm_box_pack_end(inst->main_box, b);
+             o = _label_create(tb, pl->desc ? pl->desc : "Still unknown", NULL);
+             elm_table_pack(tb, o, 0, row, 1, 1);
 
-             Eo *o = _label_create(b, pl->desc, NULL);
-             elm_box_pack_end(b, o);
-
-             o = _button_create(b, NULL, _icon_create(b, "media-playback-start", NULL),
+             o = _button_create(tb, NULL, _icon_create(tb, "media-playback-start", NULL),
                    NULL, _playlist_start_bt_clicked, pl);
              efl_key_data_set(o, "Instance", inst);
-             elm_box_pack_end(b, o);
+             elm_table_pack(tb, o, 1, row, 1, 1);
+             row++;
           }
+        o = inst->playlist_link_entry = _entry_create(tb, "Copy a playlist link so it is pasted here",
+              &(inst->playlist_link_entry));
+        ecore_timer_add(5.0, _playlist_link_selection_poll_cb, inst);
+        elm_cnp_selection_get
+           (o, ELM_SEL_TYPE_CLIPBOARD, ELM_SEL_FORMAT_TEXT, _playlist_link_selection_get, NULL);
+        elm_entry_single_line_set(o, EINA_TRUE);
+        elm_table_pack(tb, o, 0, row, 1, 1);
+        o = _button_create(tb, NULL, _icon_create(tb, "list-add", NULL),
+                 NULL, _playlist_link_add, inst);
+        elm_table_pack(tb, o, 1, row, 1, 1);
      }
    else
      {
