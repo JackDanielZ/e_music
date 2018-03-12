@@ -85,6 +85,7 @@ struct _Instance
    Eo *next_bt, *prev_bt, *stop_bt;
 
    Ecore_Idle_Exiter *select_job;
+   Ecore_Timer *timer_1s;
 
    Playlist *cur_playlist;
    Playlist_Item *cur_playlist_item;
@@ -391,7 +392,7 @@ _media_play_set(Instance *inst, Playlist_Item *pli, Eina_Bool play)
              inst->cur_playlist_item = pli;
              if (pli->is_playable)
                {
-                  elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
+                  //elm_genlist_item_selected_set(pli->gl_item, EINA_FALSE);
                   elm_genlist_item_show(pli->gl_item, ELM_GENLIST_ITEM_SCROLLTO_MIDDLE);
                   elm_genlist_item_update(pli->gl_item);
                   if (pli->thumbnail_path)
@@ -1039,7 +1040,11 @@ static void
 _playlist_item_selected(void *data EINA_UNUSED, Evas_Object *gl EINA_UNUSED, void *event_info)
 {
    Playlist_Item *pli = elm_object_item_data_get(event_info);
-   elm_genlist_item_selected_set(event_info, EINA_FALSE);
+   if (pli->inst->timer_1s)
+     {
+        elm_genlist_item_selected_set(event_info, EINA_FALSE);
+        return;
+     }
    if (pli->inst->select_job) ecore_idle_enterer_del(pli->inst->select_job);
    pli->inst->select_job = ecore_idle_enterer_add(_playlist_item_select, pli);
 }
@@ -1429,6 +1434,14 @@ _popup_comp_del_cb(void *data, Evas_Object *obj EINA_UNUSED)
    E_FREE_FUNC(inst->popup, e_object_del);
 }
 
+static Eina_Bool
+_timer_1s_clear(void *data)
+{
+   Instance *inst = data;
+   inst->timer_1s = NULL;
+   return ECORE_CALLBACK_CANCEL;
+}
+
 static void
 _button_cb_mouse_down(void *data, Evas *e EINA_UNUSED, Evas_Object *obj EINA_UNUSED, void *event_info)
 {
@@ -1451,6 +1464,7 @@ _button_cb_mouse_down(void *data, Evas *e EINA_UNUSED, Evas_Object *obj EINA_UNU
              evas_object_show(o);
              efl_wref_add(o, &inst->main_box);
 
+             inst->timer_1s = ecore_timer_add(1.0, _timer_1s_clear, inst);
              _box_update(inst);
 
              e_gadcon_popup_content_set(inst->popup, inst->main_box);
