@@ -1149,7 +1149,7 @@ _box_update(Instance *inst)
         evas_object_size_hint_weight_set(tb, EVAS_HINT_EXPAND, 0.0);
         evas_object_show(tb);
         elm_box_pack_end(inst->main_box, tb);
-        EINA_LIST_FOREACH(p->lists, itr, pl)
+        EINA_LIST_FOREACH(p ? p->lists : NULL, itr, pl)
           {
              o = _label_create(tb, pl->desc ? pl->desc : "Still unknown", NULL);
              elm_table_pack(tb, o, 0, row, 1, 1);
