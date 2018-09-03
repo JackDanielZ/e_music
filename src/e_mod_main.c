@@ -1231,7 +1231,7 @@ _box_update(Instance *inst)
 
         if (!inst->ply_emo)
           {
-             inst->ply_emo = emotion_object_add(inst->main);
+             inst->ply_emo = emotion_object_add(evas_object_evas_get(inst->main));
              efl_weak_ref(&inst->ply_emo);
              emotion_object_init(inst->ply_emo, NULL);
              efl_event_callback_add
