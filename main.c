@@ -2,15 +2,10 @@
 #define EFL_EO_API_SUPPORT
 
 #include <time.h>
-#ifndef STAND_ALONE
-#include <e.h>
-#else
 #include <Elementary.h>
-#endif
 #include <Emotion.h>
 #include <Ecore.h>
 #include <Ecore_Con.h>
-#include "e_mod_main.h"
 
 #define _EET_ENTRY "config"
 
@@ -73,10 +68,6 @@ typedef struct
 
 struct _Instance
 {
-#ifndef STAND_ALONE
-   E_Gadcon_Client *gcc;
-   E_Gadcon_Popup *popup;
-#endif
    Evas_Object *o_icon;
    Eo *main, *main_box, *pl_img;
    Eo *playlist_link_entry;
@@ -91,10 +82,6 @@ struct _Instance
    Playlist_Item *cur_playlist_item;
    Playlist_Item *item_to_play;
 };
-
-#ifndef STAND_ALONE
-static E_Module *_module = NULL;
-#endif
 
 static void
 _box_update(Instance *inst);
@@ -617,6 +604,7 @@ _playlist_start_bt_clicked(void *data, Evas_Object *obj, void *event_info EINA_U
    char request[256];
    Playlist *pl = data;
    Instance *inst = efl_key_data_get(obj, "Instance");
+   if (pl->platform->type == NULL) return;
    if (!strcmp(pl->platform->type, "youtube"))
      {
         sprintf(request, "http://www.youtube.com/watch?v=%s&list=%s", pl->first_id, pl->list_id);
@@ -982,9 +970,6 @@ _pl_item_options_show(void *data, Evas_Object *obj, void *event_info EINA_UNUSED
    pli->inst->select_job = NULL;
 
    Eo *hv = elm_hover_add(pli->inst->main_box);
-#ifndef STAND_ALONE
-   evas_object_layer_set(hv, E_LAYER_MENU);
-#endif
    elm_hover_parent_set(hv, pli->inst->main_box);
    elm_hover_target_set(hv, obj);
    efl_gfx_entity_visible_set(hv, EINA_TRUE);
@@ -1113,6 +1098,7 @@ _playlist_link_add(void *data, Evas_Object *obj EINA_UNUSED, void *event_info EI
         if (!p_found)
           {
              p = calloc(1, sizeof(*p));
+             p->type = "youtube";
              p->lists = eina_list_append(p->lists, pl);
              pl->platform = p;
              _config->platforms = eina_list_append(_config->platforms, p);
@@ -1413,203 +1399,6 @@ _instance_delete(Instance *inst)
    free(inst);
 }
 
-#ifndef STAND_ALONE
-static void
-_popup_del(Instance *inst)
-{
-   E_FREE_FUNC(inst->popup, e_object_del);
-}
-
-static void
-_popup_del_cb(void *obj)
-{
-   _popup_del(e_object_data_get(obj));
-}
-
-static void
-_popup_comp_del_cb(void *data, Evas_Object *obj EINA_UNUSED)
-{
-   Instance *inst = data;
-
-   E_FREE_FUNC(inst->popup, e_object_del);
-}
-
-static Eina_Bool
-_timer_1s_clear(void *data)
-{
-   Instance *inst = data;
-   inst->timer_1s = NULL;
-   return ECORE_CALLBACK_CANCEL;
-}
-
-static void
-_button_cb_mouse_down(void *data, Evas *e EINA_UNUSED, Evas_Object *obj EINA_UNUSED, void *event_info)
-{
-   Instance *inst;
-   Evas_Event_Mouse_Down *ev;
-
-   inst = data;
-   ev = event_info;
-   if (ev->button == 1)
-     {
-        if (!inst->popup)
-          {
-             Evas_Object *o;
-             inst->popup = e_gadcon_popup_new(inst->gcc, 0);
-
-             inst->main = e_comp->elm;
-             o = elm_box_add(e_comp->elm);
-             evas_object_size_hint_align_set(o, EVAS_HINT_FILL, EVAS_HINT_FILL);
-             evas_object_size_hint_weight_set(o, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
-             evas_object_show(o);
-             efl_wref_add(o, &inst->main_box);
-
-             inst->timer_1s = ecore_timer_add(1.0, _timer_1s_clear, inst);
-             _box_update(inst);
-
-             e_gadcon_popup_content_set(inst->popup, inst->main_box);
-             e_comp_object_util_autoclose(inst->popup->comp_object,
-                   _popup_comp_del_cb, NULL, inst);
-             e_gadcon_popup_show(inst->popup);
-             e_object_data_set(E_OBJECT(inst->popup), inst);
-             E_OBJECT_DEL_SET(inst->popup, _popup_del_cb);
-          }
-     }
-}
-
-static E_Gadcon_Client *
-_gc_init(E_Gadcon *gc, const char *name, const char *id, const char *style)
-{
-   Instance *inst;
-   E_Gadcon_Client *gcc;
-   char buf[4096];
-
-//   printf("TRANS: In - %s\n", __FUNCTION__);
-
-   inst = _instance_create();
-
-   snprintf(buf, sizeof(buf), "%s/music.edj", e_module_dir_get(_module));
-
-   inst->o_icon = edje_object_add(gc->evas);
-   if (!e_theme_edje_object_set(inst->o_icon,
-				"base/theme/modules/music",
-                                "modules/music/main"))
-      edje_object_file_set(inst->o_icon, buf, "modules/music/main");
-   evas_object_show(inst->o_icon);
-
-   gcc = e_gadcon_client_new(gc, name, id, style, inst->o_icon);
-   gcc->data = inst;
-   inst->gcc = gcc;
-
-   evas_object_event_callback_add(inst->o_icon, EVAS_CALLBACK_MOUSE_DOWN,
-				  _button_cb_mouse_down, inst);
-
-   ecore_event_handler_add(ECORE_EXE_EVENT_ERROR, _exe_error_cb, inst);
-   ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _exe_output_cb, inst);
-   ecore_event_handler_add(ECORE_EXE_EVENT_DEL, _exe_end_cb, inst);
-
-   srand(time(NULL));
-
-   return gcc;
-}
-
-static void
-_gc_shutdown(E_Gadcon_Client *gcc)
-{
-//   printf("TRANS: In - %s\n", __FUNCTION__);
-   _instance_delete(gcc->data);
-}
-
-static void
-_gc_orient(E_Gadcon_Client *gcc, E_Gadcon_Orient orient EINA_UNUSED)
-{
-   e_gadcon_client_aspect_set(gcc, 32, 16);
-   e_gadcon_client_min_size_set(gcc, 32, 16);
-}
-
-static const char *
-_gc_label(const E_Gadcon_Client_Class *client_class EINA_UNUSED)
-{
-   return "Music";
-}
-
-static Evas_Object *
-_gc_icon(const E_Gadcon_Client_Class *client_class EINA_UNUSED, Evas *evas)
-{
-   Evas_Object *o;
-   char buf[4096];
-
-   if (!_module) return NULL;
-
-   snprintf(buf, sizeof(buf), "%s/e-module-music.edj", e_module_dir_get(_module));
-
-   o = edje_object_add(evas);
-   edje_object_file_set(o, buf, "icon");
-   return o;
-}
-
-static const char *
-_gc_id_new(const E_Gadcon_Client_Class *client_class)
-{
-   char buf[32];
-   static int id = 0;
-   sprintf(buf, "%s.%d", client_class->name, ++id);
-   return eina_stringshare_add(buf);
-}
-
-EAPI E_Module_Api e_modapi =
-{
-   E_MODULE_API_VERSION, "Music"
-};
-
-static const E_Gadcon_Client_Class _gc_class =
-{
-   GADCON_CLIENT_CLASS_VERSION, "music",
-   {
-      _gc_init, _gc_shutdown, _gc_orient, _gc_label, _gc_icon, _gc_id_new, NULL, NULL
-   },
-   E_GADCON_CLIENT_STYLE_PLAIN
-};
-
-EAPI void *
-e_modapi_init(E_Module *m)
-{
-//   printf("TRANS: In - %s\n", __FUNCTION__);
-   ecore_init();
-   ecore_con_init();
-   ecore_con_url_init();
-   efreet_init();
-   emotion_init();
-
-   _module = m;
-   _config_load();
-   e_gadcon_provider_register(&_gc_class);
-
-   return m;
-}
-
-EAPI int
-e_modapi_shutdown(E_Module *m EINA_UNUSED)
-{
-//   printf("TRANS: In - %s\n", __FUNCTION__);
-   e_gadcon_provider_unregister(&_gc_class);
-
-   _module = NULL;
-   emotion_shutdown();
-   efreet_shutdown();
-   ecore_con_url_shutdown();
-   ecore_con_shutdown();
-   ecore_shutdown();
-   return 1;
-}
-
-EAPI int
-e_modapi_save(E_Module *m EINA_UNUSED)
-{
-   //e_config_domain_save("module.music", conf_edd, cpu_conf);
-   return 1;
-}
-#else
 int main(int argc, char **argv)
 {
    Instance *inst;
@@ -1660,4 +1449,3 @@ int main(int argc, char **argv)
    eina_shutdown();
    return 0;
 }
-#endif
