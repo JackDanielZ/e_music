@@ -1185,7 +1185,7 @@ _box_update(Instance *inst)
              elm_box_horizontal_set(playlist_box, EINA_TRUE);
              evas_object_size_hint_weight_set(playlist_box, EVAS_HINT_EXPAND, 0.9);
              evas_object_size_hint_align_set(playlist_box, EVAS_HINT_FILL, EVAS_HINT_FILL);
-             efl_gfx_size_hint_min_set(inst->main_box, EINA_SIZE2D(800, 400));
+             efl_gfx_hint_size_min_set(inst->main_box, EINA_SIZE2D(800, 400));
              elm_box_pack_end(inst->main_box, playlist_box);
              evas_object_show(playlist_box);
              efl_wref_add(playlist_box, &playlist_box);
@@ -1282,7 +1282,7 @@ _box_update(Instance *inst)
              inst->play_prg_sl = elm_slider_add(ply_sl_box);
              elm_slider_indicator_format_function_set(inst->play_prg_sl, _sl_format, _sl_label_free);
              elm_slider_span_size_set(inst->play_prg_sl, 120);
-             efl_event_callback_add(inst->play_prg_sl, EFL_UI_SLIDER_EVENT_CHANGED, _sl_changed, inst);
+             efl_event_callback_add(inst->play_prg_sl, EFL_UI_RANGE_EVENT_CHANGED, _sl_changed, inst);
              evas_object_size_hint_align_set(inst->play_prg_sl, EVAS_HINT_FILL, EVAS_HINT_FILL);
              evas_object_size_hint_weight_set(inst->play_prg_sl, EVAS_HINT_EXPAND, EVAS_HINT_EXPAND);
              elm_box_pack_end(ply_sl_box, inst->play_prg_sl);

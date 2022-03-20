@@ -5,9 +5,9 @@ gcc -shared -fPIC -DPIC src/e_mod_main.o `pkg-config --libs enlightenment elemen
 [ $? -eq 0 ] || exit 1
 
 #Edje
-/opt/e/bin/edje_cc -v -id ./images e-module-music.edc e-module-music.edj
+edje_cc -v -id ./images e-module-music.edc e-module-music.edj
 [ $? -eq 0 ] || exit 1
-/opt/e/bin/edje_cc -v -id ./images music.edc music.edj
+edje_cc -v -id ./images music.edc music.edj
 [ $? -eq 0 ] || exit 1
 
 # Test app
